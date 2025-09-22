@@ -1,0 +1,2216 @@
+import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QHBoxLayout, QVBoxLayout,
+    QPushButton, QLabel, QStackedWidget, QTableWidget,
+    QTableWidgetItem, QMessageBox, QComboBox, QLineEdit,
+    QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
+    QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
+    QFileDialog, QScrollArea, QGraphicsDropShadowEffect
+)
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
+from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor
+from PyQt6 import QtGui, QtCore
+from faker import Faker
+
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
+class ClickableCard(QFrame):
+    clicked = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+class PowerShellLoggerWorker(QThread):
+    output = pyqtSignal(str)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, script_path, args, log_file):
+        super().__init__()
+        self.script_path = script_path
+        self.args = args
+        self.log_file = log_file
+
+    def run(self):
+        try:
+            process = subprocess.Popen(
+                [
+                    "pwsh",
+                    "-ExecutionPolicy", "Bypass",
+                    "-NoProfile",
+                    "-Command",
+                    f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' @args }}",
+                ] + self.args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env={**os.environ, "TERM": "dumb"}  # 👈 disable ANSI color codes
+            )
+
+            with open(self.log_file, "w", encoding="utf-8") as f:
+                for line in process.stdout:
+                    line = line.strip()
+                    if line:
+                        self.output.emit(line)
+                        f.write(line + "\n")
+
+            process.wait()
+            if process.returncode == 0:
+                self.finished.emit(f"Script {os.path.basename(self.script_path)} completed successfully.")
+            else:
+                self.error.emit(f"Script exited with code {process.returncode}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+class PowerShellWorkerWithParam(QThread):
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, script_path, upn):
+        super().__init__()
+        self.script_path = script_path
+        self.upn = upn
+
+    def run(self):
+        import subprocess, os
+        try:
+            subprocess.run(
+                [
+                    "pwsh",
+                    "-ExecutionPolicy", "Bypass",
+                    "-NoProfile",
+                    "-Command",
+                    f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' -upn '{self.upn}' }}"
+                ],
+                check=True,
+                env={**os.environ, "TERM": "dumb"}  # 👈 prevent ANSI escape codes
+            )
+            self.finished.emit(f"User {self.upn} disabled successfully.")
+        except subprocess.CalledProcessError as e:
+            self.error.emit(f"PowerShell error: {e}")
+        except Exception as e:
+            self.error.emit(str(e))
+
+class PowerShellWorker(QThread):
+    finished = pyqtSignal(str, str)  # status, message
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        try:
+            result = subprocess.run(self.command, capture_output=True, text=True)
+            if result.returncode == 0:
+                self.finished.emit("success", result.stdout.strip())
+            else:
+                err = result.stderr.strip() or result.stdout.strip()
+                self.finished.emit("error", err)
+        except Exception as e:
+            self.finished.emit("error", str(e))
+
+class CsvDropZone(QLabel):
+    def __init__(self, parent=None, on_csv_dropped=None):
+        super().__init__("Drop CSV file here", parent)
+        self.on_csv_dropped = on_csv_dropped  # store callback
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #888;
+                border-radius: 8px;
+                padding: 40px;
+                color: #aaa;
+            }
+            QLabel:hover {
+                border-color: #00aaff;
+                color: #00aaff;
+            }
+        """)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            file = event.mimeData().urls()[0].toLocalFile()
+            if file.endswith(".csv"):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if file_path.endswith(".csv"):
+                    if self.on_csv_dropped:  # call parent callback
+                        self.on_csv_dropped(file_path)
+                    break
+
+class OffboardManager(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Identity Toolbox")
+        self.setGeometry(200, 100, 1200, 700)
+
+        # === Main Layout ===
+        main_layout = QHBoxLayout(self)
+
+        # --- Logs folder ---
+        self.logs_dir = os.path.join(os.path.dirname(__file__), "Powershell_Logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
+
+        # --- Left menu with framed blocks ---
+        left_panel = QVBoxLayout()
+
+        # 🔹 Block 1: Connection
+        frame_connect = QGroupBox("Connection")
+        frame_connect.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 14px;
+                border: 1px solid #aaa;
+                border-radius: 8px;
+                margin-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                background-color: transparent;
+            }
+        """)
+        connect_layout = QVBoxLayout(frame_connect)
+
+        # Helper for consistent button styling
+        def styled_button(text):
+            btn = QPushButton(text)
+            btn.setFixedHeight(40)
+            btn.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #bbb;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #dcdcdc;
+                }
+            """)
+            return btn
+
+        # Buttons
+        self.connect_btn = styled_button("Connect to Entra")
+        self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
+
+        self.upload_csv_btn = styled_button("Upload CSV Report")
+        self.upload_csv_btn.clicked.connect(self.upload_csv_file)
+
+        # Toggle button (Set / Go Back)
+        self.btn_set_path = styled_button("")  # text set later
+        self.btn_set_path.clicked.connect(self.toggle_default_path)
+        self.update_set_path_button()  # 👈 set correct label on startup
+
+        # Add buttons to layout
+        for b in [self.connect_btn, self.upload_csv_btn, self.btn_set_path]:
+            connect_layout.addWidget(b)
+
+        left_panel.addWidget(frame_connect)
+
+        # 🔹 Block 2: Navigation
+        frame_nav = QGroupBox("Navigation")
+        frame_nav.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 14px;
+                border: 1px solid #aaa;
+                border-radius: 8px;
+                margin-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                background-color: transparent;
+            }
+        """)
+        nav_layout = QVBoxLayout(frame_nav)
+
+        self.btn_dashboard = QPushButton("Dashboard")
+        self.btn_identity = QPushButton("Identity")
+        self.btn_console = QPushButton("Console")
+
+        for b in [self.btn_dashboard, self.btn_identity, self.btn_console]:
+            b.setFixedHeight(40)
+            b.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #bbb;
+                    border-radius: 6px;
+                    padding: 6px;
+                }
+                QPushButton:hover {
+                    background-color: #dcdcdc;
+                }
+            """)
+            nav_layout.addWidget(b)
+
+        left_panel.addWidget(frame_nav)
+
+        # 🔹 Block 3: User Management
+        frame_user = QGroupBox("User Management")
+        frame_user.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 14px;
+                border: 1px solid #aaa;
+                border-radius: 8px;
+                margin-top: 20px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                background-color: transparent;
+            }
+        """)
+        user_layout = QVBoxLayout(frame_user)
+
+        # Create User button
+        self.btn_create_user = QPushButton("Create User")
+        self.btn_create_user.setFixedHeight(40)
+        self.btn_create_user.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #dcdcdc;
+            }
+        """)
+
+        user_layout.addWidget(self.btn_create_user)
+
+        # Dropped CSV button
+        self.btn_dropped_csv = QPushButton("Dropped CSV")
+        self.btn_dropped_csv.setFixedHeight(40)
+        self.btn_dropped_csv.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #dcdcdc;
+            }
+        """)
+        user_layout.addWidget(self.btn_dropped_csv)
+
+        left_panel.addWidget(frame_user)
+
+        left_panel.addStretch()
+
+        self.tenant_info = QLabel("Tenant: \nDomain: \nTenant ID: ")
+        self.tenant_info.setWordWrap(True)  # 🔹 allow wrapping
+        self.tenant_info.setMaximumWidth(220)  # 🔹 keep it constrained to sidebar width
+        self.tenant_info.setStyleSheet("""
+            font-size: 12px;
+            color: #333;
+            padding: 4px;
+        """)
+        self.tenant_info.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        left_panel.addWidget(self.tenant_info)
+
+        # Load tenant info right away
+        self.update_tenant_info()
+
+        # --- Right side: stacked views ---
+        self.stacked = QStackedWidget()
+
+        # === Page Map for Navigation ===
+        self.page_map = {}
+
+        # --- Dashboard page with tabs ---
+        self.dashboard_tabs = QTabWidget()
+
+        # Identity Dashboard tab
+        self.identity_dash_tab = QWidget()
+        self.identity_dash_scroll = QScrollArea()
+        self.identity_dash_scroll.setWidgetResizable(True)
+
+        # Inner container inside scroll
+        self.identity_dash_container = QWidget()
+        self.identity_dash_layout = QVBoxLayout(self.identity_dash_container)
+
+        self.identity_dash_selector = QComboBox()
+        try:
+            self.identity_dash_selector.currentIndexChanged.disconnect()
+        except TypeError:
+            pass
+        self.identity_dash_selector.currentIndexChanged.connect(
+            lambda: self.update_dashboard_from_csv(
+                self.identity_dash_selector, self.identity_dash_cards, "identity"
+            )
+        )
+        self.identity_dash_layout.addWidget(self.identity_dash_selector)
+
+        self.identity_dash_cards = QGridLayout()
+        self.identity_dash_layout.addLayout(self.identity_dash_cards)
+
+        # Add the container into the scroll area
+        self.identity_dash_scroll.setWidget(self.identity_dash_container)
+
+        # Add scroll to the tab
+        outer_layout = QVBoxLayout(self.identity_dash_tab)
+        outer_layout.addWidget(self.identity_dash_scroll)
+
+        self.dashboard_tabs.addTab(self.identity_dash_tab, "Identity Dashboard")
+
+        # Devices Dashboard tab
+        self.devices_dash_tab = QWidget()
+        self.devices_dash_layout = QVBoxLayout(self.devices_dash_tab)
+        self.devices_dash_selector = QComboBox()
+        try:
+            self.devices_dash_selector.currentIndexChanged.disconnect()
+        except TypeError:
+            pass
+        self.devices_dash_selector.currentIndexChanged.connect(
+            lambda: self.update_dashboard_from_csv(
+                self.devices_dash_selector, self.devices_dash_cards, "devices"
+            )
+        )
+        self.devices_dash_layout.addWidget(self.devices_dash_selector)
+        self.devices_dash_cards = QGridLayout()
+        self.devices_dash_layout.addLayout(self.devices_dash_cards)
+        self.dashboard_tabs.addTab(self.devices_dash_tab, "Devices Dashboard")
+
+        # Apps Dashboard tab
+        self.apps_dash_tab = QWidget()
+        self.apps_dash_layout = QVBoxLayout(self.apps_dash_tab)
+        self.apps_dash_selector = QComboBox()
+        try:
+            self.apps_dash_selector.currentIndexChanged.disconnect()
+        except TypeError:
+            pass
+        self.apps_dash_selector.currentIndexChanged.connect(
+            lambda: self.update_dashboard_from_csv(
+                self.apps_dash_selector, self.apps_dash_cards, "apps"
+            )
+        )
+        self.apps_dash_layout.addWidget(self.apps_dash_selector)
+        self.apps_dash_cards = QGridLayout()
+        self.apps_dash_layout.addLayout(self.apps_dash_cards)
+        self.dashboard_tabs.addTab(self.apps_dash_tab, "Apps Dashboard")
+
+        # Add Dashboard to stacked widget
+        self.stacked.addWidget(self.dashboard_tabs)
+        self.page_map["dashboard"] = self.dashboard_tabs  # ✅ logical name
+
+        # --- Identity page (table view) ---
+        self.identity_page = QWidget()
+        id_layout = QVBoxLayout(self.identity_page)
+
+        self.csv_selector = QComboBox()
+        self.csv_selector.currentIndexChanged.connect(self.load_selected_csv)
+        id_layout.addWidget(self.csv_selector)
+
+        self.search_field = QLineEdit()
+        self.search_field.setPlaceholderText("Search by first or last name (starts with)...")
+        self.search_field.textChanged.connect(self.filter_table)
+        id_layout.addWidget(self.search_field)
+
+        self.identity_table = QTableWidget()
+        self.identity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.identity_table.horizontalHeader().setStretchLastSection(True)
+        self.identity_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.identity_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.identity_table.setSortingEnabled(True)
+        self.identity_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.identity_table.customContextMenuRequested.connect(self.open_context_menu)
+        id_layout.addWidget(self.identity_table)
+
+        self.stacked.addWidget(self.identity_page)
+        self.page_map["identity"] = self.identity_page
+
+        self.try_populate_comboboxes()
+
+        # --- Console page ---
+        self.console_page = QWidget()
+        console_layout = QVBoxLayout(self.console_page)
+        # (you will add widgets here later)
+        self.stacked.addWidget(self.console_page)
+        self.page_map["console"] = self.console_page
+
+        # --- Create User page ---
+        self.create_user_page = QWidget()
+        cu_layout = QHBoxLayout(self.create_user_page)
+        # (your Create User layout is defined elsewhere)
+        self.stacked.addWidget(self.create_user_page)
+        self.page_map["create_user"] = self.create_user_page
+
+        # --- Dropped CSV Page ---
+        self.page_dropped_csv = QWidget()
+        dropped_layout = QVBoxLayout(self.page_dropped_csv)
+
+        self.table_dropped_csv = QTableWidget()
+        dropped_layout.addWidget(self.table_dropped_csv)
+
+        self.stacked.addWidget(self.page_dropped_csv)
+        self.page_map["dropped_csv"] = self.page_dropped_csv
+
+        # === User Information Frame ===
+        frame_fields = QGroupBox("User Information")
+        fields_layout = QGridLayout(frame_fields)
+
+        # --- Left column fields (QLineEdit mostly) ---
+        self.field_displayname = QLineEdit()
+        self.field_displayname.setPlaceholderText("John DOE")
+        self.field_displayname.textChanged.connect(self.process_display_name)
+        self.field_displayname.editingFinished.connect(self.on_displayname_finished)
+        self.field_displayname.returnPressed.connect(self.on_displayname_finished)
+
+        self.field_givenname = QLineEdit()
+        self.field_givenname.setPlaceholderText("Autofilled by Display Name")
+
+        self.field_surname = QLineEdit()
+        self.field_surname.setPlaceholderText("Autofilled by Display Name")
+
+        self.field_upn = QLineEdit()
+        self.field_upn.setPlaceholderText("Autofilled by Display Name")
+
+        self.field_employeeid = QLineEdit()
+        self.field_employeeid.setPlaceholderText("EMP12345")
+
+        self.field_zip = QLineEdit()
+        self.field_zip.setPlaceholderText("10001")
+
+        self.field_street = QLineEdit()
+        self.field_street.setPlaceholderText("123 Main St")
+
+        self.field_businessphone = QLineEdit()
+        self.field_businessphone.setPlaceholderText("+1 555-123-4567")
+
+        self.field_mobilephone = QLineEdit()
+        self.field_mobilephone.setPlaceholderText("+1 555-987-6543")
+
+        self.field_fax = QLineEdit()
+        self.field_fax.setPlaceholderText("+1 555-555-5555")
+
+        self.field_proxy = QLineEdit()
+        self.field_proxy.setPlaceholderText("Editable in Exchange.")
+
+        self.field_email = QLineEdit()
+        self.field_email.setPlaceholderText("johndoe@company.com")
+
+        self.field_othermails = QLineEdit()
+        self.field_othermails.setPlaceholderText("jdoe@gmail.com")
+
+        self.field_im = QLineEdit()
+        self.field_im.setPlaceholderText("This field is not editable.")
+        self.field_im.setReadOnly(True)
+
+        self.field_mailnickname = QLineEdit()
+        self.field_mailnickname.setPlaceholderText("Autofilled by Display Name.")
+        self.field_mailnickname.setReadOnly(True)
+
+        self.field_hiredate = QDateEdit()
+        self.field_hiredate.setCalendarPopup(True)
+        self.field_hiredate.setDate(QDate.currentDate())
+
+        self.field_orgdata = QLineEdit()
+        self.field_orgdata.setPlaceholderText("This field is not editable.")
+        self.field_orgdata.setReadOnly(True)
+
+        # --- Right column fields (QComboBox for selection) ---
+        self.field_domain = QComboBox()
+        self.load_domains()
+
+        self.field_password = QLineEdit()
+        self.field_password.setPlaceholderText("Auto-generated or type manually")
+        self.field_password.setEchoMode(QLineEdit.EchoMode.Password)
+
+        # Eye toggle action
+        toggle_action = QAction(QIcon.fromTheme("eye"), "Show/Hide", self.field_password)
+        toggle_action.setCheckable(True)
+
+        def toggle_password():
+            if toggle_action.isChecked():
+                self.field_password.setEchoMode(QLineEdit.EchoMode.Normal)
+            else:
+                self.field_password.setEchoMode(QLineEdit.EchoMode.Password)
+
+        toggle_action.triggered.connect(toggle_password)
+        self.field_password.addAction(toggle_action, QLineEdit.ActionPosition.TrailingPosition)
+
+        self.field_company = self.make_autocomplete_combobox()
+        self.field_jobtitle = self.make_autocomplete_combobox()
+        self.field_department = self.make_autocomplete_combobox()
+        self.field_city = self.make_autocomplete_combobox()
+        self.field_country = self.make_autocomplete_combobox()
+        self.field_state = self.make_autocomplete_combobox()
+        self.field_office = self.make_autocomplete_combobox()
+        self.field_manager = self.make_autocomplete_combobox()
+        self.field_sponsors = self.make_autocomplete_combobox()
+        self.field_accountenabled = self.make_autocomplete_combobox()
+        self.field_usagelocation = self.make_autocomplete_combobox()
+        self.field_preferreddatalocation = self.make_autocomplete_combobox()
+        self.field_agegroup = self.make_autocomplete_combobox()
+        self.field_legalage = self.make_autocomplete_combobox()
+        self.field_minorconsent = self.make_autocomplete_combobox()
+        self.field_accesspackage = self.make_autocomplete_combobox()
+
+        # --- Add to grid (row, col) ---
+        fields_layout.addWidget(QLabel("Display Name"), 0, 0)
+        fields_layout.addWidget(self.field_displayname, 0, 1)
+        fields_layout.addWidget(QLabel("Domain"), 0, 2)
+        fields_layout.addWidget(self.field_domain, 0, 3)
+
+        fields_layout.addWidget(QLabel("First Name"), 1, 0)
+        fields_layout.addWidget(self.field_givenname, 1, 1)
+        fields_layout.addWidget(QLabel("Password"), 1, 2)
+        fields_layout.addWidget(self.field_password, 1, 3)
+
+        fields_layout.addWidget(QLabel("Last Name"), 2, 0)
+        fields_layout.addWidget(self.field_surname, 2, 1)
+        fields_layout.addWidget(QLabel("Job Title"), 2, 2)
+        fields_layout.addWidget(self.field_jobtitle, 2, 3)
+
+        fields_layout.addWidget(QLabel("User Principal Name"), 3, 0)
+        fields_layout.addWidget(self.field_upn, 3, 1)
+        fields_layout.addWidget(QLabel("Company Name"), 3, 2)
+        fields_layout.addWidget(self.field_company, 3, 3)
+
+        fields_layout.addWidget(QLabel("Employee ID"), 4, 0)
+        fields_layout.addWidget(self.field_employeeid, 4, 1)
+        fields_layout.addWidget(QLabel("Department"), 4, 2)
+        fields_layout.addWidget(self.field_department, 4, 3)
+
+        fields_layout.addWidget(QLabel("ZIP/Postal Code"), 5, 0)
+        fields_layout.addWidget(self.field_zip, 5, 1)
+        fields_layout.addWidget(QLabel("City"), 5, 2)
+        fields_layout.addWidget(self.field_city, 5, 3)
+
+        fields_layout.addWidget(QLabel("Street Address"), 6, 0)
+        fields_layout.addWidget(self.field_street, 6, 1)
+        fields_layout.addWidget(QLabel("Country/Region"), 6, 2)
+        fields_layout.addWidget(self.field_country, 6, 3)
+
+        fields_layout.addWidget(QLabel("Business Phone"), 7, 0)
+        fields_layout.addWidget(self.field_businessphone, 7, 1)
+        fields_layout.addWidget(QLabel("State/Province"), 7, 2)
+        fields_layout.addWidget(self.field_state, 7, 3)
+
+        fields_layout.addWidget(QLabel("Mobile Phone"), 8, 0)
+        fields_layout.addWidget(self.field_mobilephone, 8, 1)
+        fields_layout.addWidget(QLabel("Office Location"), 8, 2)
+        fields_layout.addWidget(self.field_office, 8, 3)
+
+        fields_layout.addWidget(QLabel("Fax Number"), 9, 0)
+        fields_layout.addWidget(self.field_fax, 9, 1)
+        fields_layout.addWidget(QLabel("Manager"), 9, 2)
+        fields_layout.addWidget(self.field_manager, 9, 3)
+
+        fields_layout.addWidget(QLabel("Proxy Addresses"), 10, 0)
+        fields_layout.addWidget(self.field_proxy, 10, 1)
+        fields_layout.addWidget(QLabel("Sponsors"), 10, 2)
+        fields_layout.addWidget(self.field_sponsors, 10, 3)
+
+        fields_layout.addWidget(QLabel("Email"), 11, 0)
+        fields_layout.addWidget(self.field_email, 11, 1)
+        fields_layout.addWidget(QLabel("Account Enabled"), 11, 2)
+        fields_layout.addWidget(self.field_accountenabled, 11, 3)
+
+        fields_layout.addWidget(QLabel("Other Emails"), 12, 0)
+        fields_layout.addWidget(self.field_othermails, 12, 1)
+        fields_layout.addWidget(QLabel("Usage Location"), 12, 2)
+        fields_layout.addWidget(self.field_usagelocation, 12, 3)
+
+        fields_layout.addWidget(QLabel("IM Addresses"), 13, 0)
+        fields_layout.addWidget(self.field_im, 13, 1)
+        fields_layout.addWidget(QLabel("Preferred Data Location"), 13, 2)
+        fields_layout.addWidget(self.field_preferreddatalocation, 13, 3)
+
+        fields_layout.addWidget(QLabel("Mail Nickname"), 14, 0)
+        fields_layout.addWidget(self.field_mailnickname, 14, 1)
+        fields_layout.addWidget(QLabel("Age Group"), 14, 2)
+        fields_layout.addWidget(self.field_agegroup, 14, 3)
+
+        fields_layout.addWidget(QLabel("Employee Hire Date"), 15, 0)
+        fields_layout.addWidget(self.field_hiredate, 15, 1)
+        fields_layout.addWidget(QLabel("Legal Age Group"), 15, 2)
+        fields_layout.addWidget(self.field_legalage, 15, 3)
+
+        fields_layout.addWidget(QLabel("Employee Org Data"), 16, 0)
+        fields_layout.addWidget(self.field_orgdata, 16, 1)
+        fields_layout.addWidget(QLabel("Consent for Minor"), 16, 2)
+        fields_layout.addWidget(self.field_minorconsent, 16, 3)
+
+        fields_layout.addWidget(QLabel("Access Package"), 17, 2)
+        fields_layout.addWidget(self.field_accesspackage, 17, 3)
+
+        cu_layout.addWidget(frame_fields, 3)
+        self.stacked.addWidget(self.create_user_page)
+
+        # === Right Frame: Templates, Actions, Random User Generator ===
+        right_panel = QVBoxLayout()
+
+        # --- 1. Template Management ---
+        frame_templates = QGroupBox("Templates")
+        tpl_layout = QVBoxLayout(frame_templates)
+
+        self.template_selector = QComboBox()
+        self.template_selector.addItem("-- Select Template --")  # default entry
+        self.load_templates()  # load templates from JSON
+        self.template_selector.currentIndexChanged.connect(self.apply_template)
+
+        self.btn_save_template = QPushButton("Save as Template")
+        self.btn_save_template.clicked.connect(self.save_template)
+        self.btn_save_template.setFixedHeight(35)
+
+        self.btn_update_template = QPushButton("Update Current Template")
+        self.btn_update_template.clicked.connect(self.update_current_template)
+        self.btn_update_template.setFixedHeight(35)
+
+        tpl_layout.addWidget(QLabel("Select Template"))
+        tpl_layout.addWidget(self.template_selector)
+        tpl_layout.addWidget(self.btn_save_template)
+        tpl_layout.addWidget(self.btn_update_template)
+
+        # --- 2. Actions ---
+        frame_actions = QGroupBox("Actions")
+        actions_layout = QVBoxLayout(frame_actions)
+
+        self.btn_submit_user = QPushButton("Create User")
+        self.btn_submit_user.clicked.connect(self.create_user)
+        self.btn_submit_user.setFixedHeight(35)
+
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.clicked.connect(self.clear_all_fields)
+        self.btn_clear.setFixedHeight(35)
+
+        actions_layout.addWidget(self.btn_submit_user)
+        actions_layout.addWidget(self.btn_clear)
+
+        # --- 3. Random User Generator ---
+        frame_random = QGroupBox("Random User Generator")
+        random_layout = QVBoxLayout(frame_random)
+
+        self.btn_random_user = QPushButton("Create Random User")
+        self.btn_random_user.clicked.connect(self.handle_create_random_user)
+        self.btn_random_user.setFixedHeight(35)
+
+        self.random_slider = QSlider(Qt.Orientation.Horizontal)
+        self.random_slider.setMinimum(1)
+        self.random_slider.setMaximum(50)  # adjust if needed
+        self.random_slider.setValue(1)
+
+        self.random_count_label = QLabel("Users: 1")
+        self.random_slider.valueChanged.connect(
+            lambda v: self.random_count_label.setText(f"Users: {v}")
+        )
+
+        random_layout.addWidget(self.btn_random_user)
+        random_layout.addWidget(self.random_slider)
+        random_layout.addWidget(self.random_count_label)
+
+        self.random_status = QLabel("")
+        self.random_status.setStyleSheet("color: gray;")
+        random_layout.addWidget(self.random_status)
+
+        # === Bulk Actions ===
+        frame_bulk = QGroupBox("Bulk Actions")
+        bulk_layout = QVBoxLayout(frame_bulk)
+
+        # Button: Generate CSV template
+        self.btn_generate_csv = QPushButton("Generate CSV Template")
+        self.btn_generate_csv.clicked.connect(self.generate_csv_template)
+        bulk_layout.addWidget(self.btn_generate_csv)
+
+        # Drop zone for CSV
+        self.csv_drop_zone = CsvDropZone(
+            on_csv_dropped=self.handle_csv_drop  # callback into OffboardManager
+        )
+        bulk_layout.addWidget(self.csv_drop_zone)
+
+        # Button: Process CSV bulk creation
+        self.btn_process_bulk = QPushButton("Process Bulk Creation")
+        self.btn_process_bulk.setEnabled(False)  # Enabled only when CSV is dropped
+        self.btn_process_bulk.clicked.connect(self.process_bulk_creation)
+        bulk_layout.addWidget(self.btn_process_bulk)
+
+        # --- Add sections to right panel with spacing ---
+        right_panel.addWidget(frame_templates)
+        right_panel.addSpacing(25)  # <-- space between sections
+        right_panel.addWidget(frame_actions)
+        right_panel.addSpacing(25)
+        right_panel.addWidget(frame_random)
+        right_panel.addSpacing(25)
+        right_panel.addWidget(frame_bulk)
+        right_panel.addStretch()
+
+        frame_right = QGroupBox("Controls")
+        frame_right.setLayout(right_panel)
+
+        # Add to main layout
+        cu_layout.addWidget(frame_fields, 3)  # Left side (user info)
+        cu_layout.addWidget(frame_right, 1)  # Right side (controls)
+
+        self.stacked.addWidget(self.create_user_page)  # Page 3
+
+        # Log selector
+        self.log_selector = QComboBox()
+        self.log_selector.currentIndexChanged.connect(self.load_selected_log)
+        console_layout.addWidget(self.log_selector)
+
+        # Search field
+        self.log_search = QLineEdit()
+        self.log_search.setPlaceholderText("Search logs (press Enter)...")
+        self.log_search.returnPressed.connect(self.search_logs)
+        console_layout.addWidget(self.log_search)
+
+        # Console output
+        self.console_output = QTextEdit()
+        self.console_output.setReadOnly(True)
+        self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
+        console_layout.addWidget(self.console_output)
+
+        self.stacked.addWidget(self.console_page)  # Page 4
+
+        # Populate logs at startup
+        self.refresh_log_list()
+
+        # Add layouts
+        main_layout.addLayout(left_panel, 2)
+        main_layout.addWidget(self.stacked, 8)
+        self.setLayout(main_layout)
+
+        # Button actions → now they match the page order
+        self.btn_dashboard.clicked.connect(lambda: self.show_named_page("dashboard"))
+        self.btn_identity.clicked.connect(lambda: self.show_named_page("identity"))
+        self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
+        self.btn_create_user.clicked.connect(lambda: self.show_named_page("create_user"))
+        self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
+
+        # Populate CSV lists
+        self.refresh_csv_lists()
+
+        QTimer.singleShot(0, self.try_populate_comboboxes)
+
+        # Shortcut: Ctrl+R reloads app
+        shortcut_reload = QShortcut(QKeySequence("Ctrl+R"), self)
+        shortcut_reload.activated.connect(self.reload_app)
+
+        self.ps_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Powershell_Scripts")
+
+    def is_using_default_identity_dir(self):
+        """Check if current default path is Database_Identity."""
+        base_dir = os.path.dirname(__file__)
+        return self.get_default_csv_path() == os.path.join(base_dir, "Database_Identity")
+
+    def toggle_default_path(self):
+        """Switch between Database_Identity and custom directory."""
+        base_dir = os.path.dirname(__file__)
+        config_path = os.path.join(base_dir, "config.json")
+
+        if self.is_using_default_identity_dir():
+            # Current is Database_Identity → ask for a new path
+            folder = QFileDialog.getExistingDirectory(self, "Select Default CSV Directory")
+            if not folder:
+                return
+            config = {"default_csv_path": folder}
+        else:
+            # Current is custom → reset to Database_Identity
+            config = {"default_csv_path": os.path.join(base_dir, "Database_Identity")}
+
+        # Save config
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=4)
+
+        QMessageBox.information(self, "Success", f"Default path set to:\n{config['default_csv_path']}")
+
+        # Update button text
+        self.update_set_path_button()
+
+        # Refresh comboboxes after path change
+        self.try_populate_comboboxes()
+        self.refresh_csv_lists()
+
+    def update_set_path_button(self):
+        """Update the button label depending on current default path."""
+        if self.is_using_default_identity_dir():
+            self.btn_set_path.setText("Set CSV Default Path")
+        else:
+            self.btn_set_path.setText("Go Back to Default Directory")
+
+    def update_tenant_info(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        tenant_json = os.path.join(base_dir, "Database_Identity", "TenantInfo.json")
+
+        if os.path.exists(tenant_json):
+            try:
+                with open(tenant_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                tenant_name = data.get("TenantName", "Unknown")
+                domain = data.get("Domain", "Unknown")
+                tenant_id = data.get("TenantId", "Unknown")
+                self.tenant_info.setText(
+                    f"Tenant: {tenant_name}\nDomain: {domain}\nTenant ID: {tenant_id}"
+                )
+            except Exception as e:
+                self.tenant_info.setText(f"⚠️ Failed to load tenant info: {e}")
+        else:
+            self.tenant_info.setText("⚠️ No tenant info found.")
+
+    # --- Navigation ---
+    def show_named_page(self, name: str):
+        """Switch stacked widget to a page by its logical name from page_map."""
+        if name in self.page_map:
+            widget = self.page_map[name]
+            index = self.stacked.indexOf(widget)
+            if index != -1:
+                self.stacked.setCurrentIndex(index)
+
+                # 🔹 Refresh comboboxes when entering Create User page
+                if name == "create_user":
+                    self.try_populate_comboboxes()
+
+            else:
+                QMessageBox.warning(self, "Navigation Error", f"Page '{name}' not found in stacked widget.")
+        else:
+            QMessageBox.warning(self, "Navigation Error", f"Page name '{name}' does not exist in page_map.")
+
+    def confirm_connect_to_entra(self):
+        reply = QMessageBox.question(
+            self,
+            "Confirm Connection",
+            "Are you sure you want to connect to Entra?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+
+        if reply == QMessageBox.StandardButton.Ok:
+            self.run_powershell_script()
+        else:
+            return  # silently cancel
+
+    def run_powershell_script(self):
+        script_path = os.path.join(self.ps_scripts_dir, "retrieve_users_data_batch.ps1")
+
+        # Use the logger worker (no UPN required here)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
+
+        self.console_output.clear()
+        self.worker = PowerShellLoggerWorker(script_path, [], log_file)
+
+        # Connect signals
+        self.worker.output.connect(lambda line: self.console_output.append(line))
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
+        self.worker.finished.connect(self.refresh_log_list)
+        self.worker.finished.connect(self.refresh_csv_lists)
+
+        # Update tenant info automatically after script finishes
+        self.worker.finished.connect(lambda _: self.update_tenant_info())
+
+        self.worker.start()
+        self.show_named_page("console")  # Switch to console tab
+
+    # --- NEW FUNCTION ---
+    def run_powershell_with_output(self, script_path, args=[]):
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
+
+        # Clear console before new run
+        self.console_output.clear()
+
+        # Create worker
+        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        self.worker.output.connect(lambda line: self.console_output.append(line))
+        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+
+        # Refresh logs and csv when done
+        self.worker.finished.connect(self.refresh_log_list)
+        self.worker.finished.connect(self.refresh_csv_lists)
+
+        # Start worker
+        self.worker.start()
+
+        # Show console tab while running
+        self.show_named_page("console")
+
+    def open_context_menu(self, pos):
+        index = self.identity_table.indexAt(pos)
+        if not index.isValid():
+            return
+
+        # Ensure right-clicked row is added to selection instead of replacing it
+        if not self.identity_table.selectionModel().isSelected(index):
+            self.identity_table.selectRow(index.row())
+
+        menu = QMenu(self)
+        disable_action = QAction("Disable User(s)", self)
+        disable_action.triggered.connect(self.confirm_disable_users)
+        menu.addAction(disable_action)
+
+        menu.exec(self.identity_table.viewport().mapToGlobal(pos))
+
+    def disable_selected_user(self, upns: list[str]):
+        if not upns:
+            QMessageBox.warning(self, "No UPN", "Selected rows have no UPNs.")
+            return
+
+        script_path = os.path.join(self.ps_scripts_dir, "disable_user.ps1")
+
+        # Join UPNs with commas into a single string
+        args = ["-upn", ",".join(upns)]
+
+        self.show_named_page("console")
+        self.run_powershell_with_output(script_path, args)
+
+    def confirm_disable_users(self):
+        # Collect selected UPN(s) from your identity table
+        selected_items = self.identity_table.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user to disable.")
+            return
+
+        # Assuming UPN is in column 4 (adjust if needed to match your table)
+        upns = list({
+            self.identity_table.item(i.row(), 4).text().strip()
+            for i in selected_items
+            if self.identity_table.item(i.row(), 4)
+        })
+
+        if not upns:
+            QMessageBox.warning(self, "No UPNs", "Could not find UPNs in the selection.")
+            return
+
+        # Show confirmation
+        reply = QMessageBox.question(
+            self,
+            "Confirm Disable",
+            f"Are you sure you want to disable the following user(s)?\n\n" + "\n".join(upns),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+
+        if reply == QMessageBox.StandardButton.Ok:
+            # Pass the UPN list into disable_selected_user
+            self.disable_selected_user(upns)
+
+    def on_script_finished(self, msg):
+        self.refresh_csv_lists()
+        QMessageBox.information(self, "Success", msg)
+
+    def refresh_log_list(self):
+        self.log_selector.clear()
+        logs = sorted(glob.glob(os.path.join(self.logs_dir, "*.log")), reverse=True)
+        if not logs:
+            self.log_selector.addItem("No logs available")
+        else:
+            for log in logs:
+                self.log_selector.addItem(log)
+
+    def load_selected_log(self):
+        path = self.log_selector.currentText()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.console_output.clear()
+                self.console_output.append(f.read())
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load log:\n{e}")
+
+    # --- CSV handling ---
+    def refresh_csv_lists(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Ensure required folders exist
+        for folder in [
+            "Database_Identity",
+            "Database_Devices",
+            "Database_Apps",
+            "Powershell_Logs",
+            "Random_Users",
+            "Powershell_Scripts"
+        ]:
+            path = os.path.join(base_dir, folder)
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+        # Identity CSVs
+        identity_dir = self.get_default_csv_path()
+        identity_csvs = glob.glob(os.path.join(identity_dir, "*.csv"))
+
+        # Sort by modification time (latest first)
+        identity_csvs.sort(key=os.path.getmtime, reverse=True)
+
+        # Populate Identity selectors
+        for cb in [self.csv_selector, self.identity_dash_selector]:
+            cb.clear()
+            if not identity_csvs:
+                cb.addItem("No CSV found")
+            else:
+                for f in identity_csvs:
+                    cb.addItem(f)
+                # Auto-select the most recent CSV (index 0 after sorting)
+                cb.setCurrentIndex(0)
+
+        # Devices CSVs
+        devices_dir = os.path.join(base_dir, "Database_Devices")
+        devices_csvs = glob.glob(os.path.join(devices_dir, "*.csv"))
+
+        # Apps CSVs
+        apps_dir = os.path.join(base_dir, "Database_Apps")
+        apps_csvs = glob.glob(os.path.join(apps_dir, "*.csv"))
+
+        # Populate Identity selectors
+        for cb in [self.csv_selector, self.identity_dash_selector]:
+            cb.clear()
+            if not identity_csvs:
+                cb.addItem("No CSV found")
+            else:
+                for f in identity_csvs:
+                    cb.addItem(f)
+
+        # Populate Devices selector
+        self.devices_dash_selector.clear()
+        if not devices_csvs:
+            self.devices_dash_selector.addItem("No CSV found")
+        else:
+            for f in devices_csvs:
+                self.devices_dash_selector.addItem(f)
+
+        # Populate Apps selector
+        self.apps_dash_selector.clear()
+        if not apps_csvs:
+            self.apps_dash_selector.addItem("No CSV found")
+        else:
+            for f in apps_csvs:
+                self.apps_dash_selector.addItem(f)
+
+    def load_selected_csv(self):
+        path = self.csv_selector.currentText()
+        if not path.endswith(".csv"):
+            return
+        try:
+            df = pd.read_csv(path, dtype=str, sep=";").fillna("")
+            # store the dataframe so the search can use it
+            self.current_df = df.copy()
+
+            # show full table first
+            self.display_dataframe(self.current_df)
+
+            # if there's already text in the search box, apply it
+            if self.search_field.text().strip():
+                self.filter_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
+
+    def display_dataframe(self, df: pd.DataFrame):
+        self.identity_table.setRowCount(0)
+        self.identity_table.setColumnCount(len(df.columns))
+        self.identity_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
+        for r_idx, (_, row) in enumerate(df.iterrows()):
+            self.identity_table.insertRow(r_idx)
+            for c_idx, val in enumerate(row):
+                self.identity_table.setItem(r_idx, c_idx, QTableWidgetItem(str(val)))
+
+    def filter_table(self):
+        if not hasattr(self, "current_df") or self.current_df is None:
+            return
+
+        query = self.search_field.text().strip().lower()
+        if not query:
+            self.display_dataframe(self.current_df)
+            return
+
+        # allow multiple search terms separated by commas or spaces
+        terms = [q.strip() for q in query.replace(",", " ").split() if q.strip()]
+
+        df = self.current_df
+
+        # Safely get columns as strings
+        disp = df.get("DisplayName", pd.Series([""] * len(df))).fillna("").astype(str)
+        gn = df.get("GivenName", pd.Series([""] * len(df))).fillna("").astype(str)
+        sn = df.get("Surname", pd.Series([""] * len(df))).fillna("").astype(str)
+
+        # If GivenName/Surname empty, fall back to DisplayName split
+        gn = gn.where(gn.str.strip() != "", disp.str.split().str[0].fillna(""))
+        sn = sn.where(sn.str.strip() != "", disp.str.split().str[-1].fillna(""))
+
+        # Build mask: row matches if ANY term matches given/surname/displayname
+        mask = pd.Series([False] * len(df))
+        for t in terms:
+            mask |= (
+                    gn.str.lower().str.contains(t) |
+                    sn.str.lower().str.contains(t) |
+                    disp.str.lower().str.contains(t)
+            )
+
+        filtered = df[mask].copy()
+        self.display_dataframe(filtered)
+
+    def filter_identity_table(self, filter_type: str):
+        """Filter Identity table based on dashboard card clicked."""
+        if not hasattr(self, "current_df") or self.current_df is None:
+            return
+
+        df = self.current_df.copy()
+
+        try:
+            if filter_type == "Identity Total":
+                filtered = df
+
+            elif filter_type == "Enabled":
+                filtered = df[df["AccountEnabled"].str.lower() == "true"]
+
+            elif filter_type == "Disabled":
+                filtered = df[df["AccountEnabled"].str.lower() == "false"]
+
+            elif filter_type == "Guests":
+                filtered = df[df["UserType"].str.lower() == "guest"]
+
+            elif filter_type == "Cloud-only":
+                filtered = df[df["OnPremisesSyncEnabled"].str.lower() != "true"]
+
+            elif filter_type == "Synced":
+                filtered = df[df["OnPremisesSyncEnabled"].str.lower() == "true"]
+
+            elif filter_type == "Licensed":
+                filtered = df[df["LicensesSkuType"].str.strip() != ""]
+
+            elif filter_type == "MFA Capable":
+                filtered = df[
+                    (df["AuthenticationMethod"].str.strip() != "") |
+                    (df["WindowsHelloEnabled"].str.lower() == "true") |
+                    (df["SoftwareOATHEnabled"].str.lower() == "true") |
+                    (df["MicrosoftAuthenticatorDisplayName"].str.strip() != "") |
+                    (df["FIDO2DisplayName"].str.strip() != "") |
+                    (df["SMSPhoneNumber"].str.strip() != "") |
+                    (df["EmailAuthAddress"].str.strip() != "")
+                    ]
+
+            elif filter_type == "Stale > 90 days":
+                lsi = pd.to_datetime(df["LastSignInDateTime"], errors="coerce", utc=True)
+                mask = (pd.Timestamp.utcnow() - lsi) > pd.Timedelta(days=90)
+                filtered = df[mask.fillna(False)]
+
+            elif filter_type == "Never signed in":
+                lsi = pd.to_datetime(df["LastSignInDateTime"], errors="coerce", utc=True)
+                filtered = df[lsi.isna()]
+
+            elif filter_type == "With devices":
+                filtered = df[df["Devices"].str.strip() != ""]
+
+            elif filter_type == "No manager":
+                filtered = df[df["ManagerDisplayName"].str.strip() == ""]
+
+            else:
+                return
+
+            # Show filtered data in table
+            self.display_dataframe(filtered)
+
+            # Jump to Identity tab
+            self.show_named_page("identity")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Filtering failed for {filter_type}:\n{e}")
+
+    def search_logs(self):
+        query = self.log_search.text().strip().lower()
+        if not query:
+            # If search is empty, restore full list
+            self.refresh_log_list()
+            return
+
+        matches = []
+        for log in glob.glob(os.path.join(self.logs_dir, "*.log")):
+            try:
+                with open(log, "r", encoding="utf-8") as f:
+                    content = f.read().lower()
+                    if query in content:
+                        matches.append(log)
+            except:
+                continue
+
+        self.log_selector.clear()
+        if matches:
+            for m in matches:
+                self.log_selector.addItem(m)
+            # Auto-load first match
+            self.log_selector.setCurrentIndex(0)
+            self.load_selected_log()
+        else:
+            self.log_selector.addItem("No matches found")
+            self.console_output.setPlainText("No log contains: " + query)
+
+    def upload_csv_file(self):
+        """Open file dialog, copy CSV to Database_Identity, and load it."""
+        path, _ = QFileDialog.getOpenFileName(self, "Select CSV", "", "CSV Files (*.csv)")
+        if not path:
+            return
+
+        try:
+            target_dir = self.get_default_csv_path()
+            os.makedirs(target_dir, exist_ok=True)
+            target_path = os.path.join(target_dir, os.path.basename(path))
+            shutil.copy(path, target_path)
+
+            # Add to combobox & select it
+            if target_path not in [self.csv_selector.itemText(i) for i in range(self.csv_selector.count())]:
+                self.csv_selector.addItem(target_path)
+            self.csv_selector.setCurrentText(target_path)
+
+            # Force reload into Identity table
+            self.load_selected_csv()
+
+            QMessageBox.information(self, "Success", f"CSV uploaded and loaded:\n{target_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to upload CSV:\n{e}")
+
+    def create_user(self):
+        displayname = self.field_displayname.text().strip()
+        givenname = self.field_givenname.text().strip()
+        surname = self.field_surname.text().strip()
+        upn_local = self.field_upn.text().strip()
+        domain = self.field_domain.currentText().strip()
+        jobtitle = self.field_jobtitle.text().strip()
+        department = self.field_department.text().strip()
+
+        if not displayname or not givenname or not surname or not upn_local:
+            QMessageBox.warning(self, "Missing Fields", "Please fill all required fields.")
+            return
+
+        upn = f"{upn_local}@{domain}"
+        script_path = os.path.abspath("create_user.ps1")
+
+        args = [
+            "-DisplayName", displayname,
+            "-GivenName", givenname,
+            "-Surname", surname,
+            "-UserPrincipalName", upn,
+            "-JobTitle", jobtitle,
+            "-Department", department
+        ]
+
+        self.show_named_page("console")  # Switch to console
+        self.run_powershell_with_output(script_path, args)
+
+    def generate_fake_users(self, domain, count):
+        if count <= 0:
+            raise ValueError("Number of users must be greater than 0")
+
+        fake = Faker()
+        users = []
+
+        for _ in range(count):
+            first = fake.first_name()
+            last = fake.last_name()
+            upn = f"{first.lower()}.{last.lower()}@{domain}"
+            password = "P@ssword!" + str(random.randint(1000, 9999))
+
+            users.append({
+                "Display name": f"{first} {last}",
+                "First name": first,
+                "Last name": last,
+                "User principal name": upn,
+                "Password": password,
+                "Job title": fake.job(),
+                "Department": fake.random_element(elements=("IT", "HR", "Finance", "Sales", "Marketing")),
+                "Company name": fake.company(),
+                "City": fake.city(),
+                "Country or region": fake.country(),
+                "State or province": fake.state(),
+                "Street address": fake.street_address(),
+                "ZIP or postal code": fake.postcode(),
+                "Usage location": fake.country_code(),
+                "Preferred data location": "",
+                "Employee ID": "",
+                "Employee type": "",
+                "Employee hire date": fake.date_this_decade().isoformat(),
+                "Office location": fake.city(),
+                "Email": "",
+                "Other emails": "",
+                "Proxy addresses": "",
+                "Business phone": "",
+                "Mobile phone": "",
+                "Fax number": "",
+                "IM addresses": "",
+                "Mail nickname": upn.split("@")[0],
+            })
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        csv_path = os.path.join(
+            os.path.dirname(__file__),
+            "Random_Users",
+            f"{timestamp}_generated_users.csv"
+        )
+
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=users[0].keys())
+            writer.writeheader()
+            writer.writerows(users)
+
+        return csv_path
+
+    def handle_create_random_user(self):
+        domain = self.field_domain.currentText().strip()
+        count = int(self.random_slider.value())
+
+        if not domain:
+            QMessageBox.warning(self, "Missing Domain", "⚠ Please select a domain before creating users.")
+            return
+
+        if count <= 0:
+            QMessageBox.warning(self, "Invalid Count", "⚠ Number of users must be at least 1.")
+            return
+
+        # --- Step 1: Confirmation dialog
+        reply = QMessageBox.question(
+            self,
+            "Confirm Random User Creation",
+            f" Are you sure you want to create {count} random user(s)?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return  # user cancelled
+
+        # --- Redirect user to Console tab immediately
+        self.show_named_page("console")
+        self.console_output.append(f"⏳ Starting creation of {count} random users...")
+
+        # --- Step A: Generate fake users CSV
+        csv_path = self.generate_fake_users(domain, count)
+
+        # --- Step B: Build log path
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        log_dir = os.path.join(base_dir, "Powershell_Logs")
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        log_path = os.path.join(log_dir, f"{timestamp}_create_random_users.log")
+
+        # --- Step C: Build PowerShell command
+        script_path = os.path.join(base_dir, "Powershell_Scripts", "create_random_users.ps1")
+        cmd = [
+            "pwsh", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-CsvPath", csv_path,
+            "-LogPath", log_path
+        ]
+
+        # --- Step D: Run in background QThread (keep reference!)
+        self.random_worker = PowerShellWorker(cmd)
+        self.random_worker.finished.connect(self.on_random_user_done)
+        self.random_worker.start()
+
+    def on_random_user_done(self, status, msg):
+        # keep error/success messages short and prevent resizing
+        self.random_status.setWordWrap(True)
+        self.random_status.setFixedWidth(150)  # adjust width for your layout
+
+        if status == "success":
+            self.random_status.setText("Random users created successfully!")
+        else:
+            # show only useful part of error
+            if "Authentication" in msg:
+                self.random_status.setText("Authentication error (please login).")
+            elif "CSV not found" in msg:
+                self.random_status.setText(" CSV file not found.")
+            else:
+                short_msg = msg.split("\n")[0]  # first line only
+                self.random_status.setText(f" {short_msg}")
+
+        self.random_worker = None
+
+    def generate_csv_template(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save CSV Template", "", "CSV Files (*.csv)")
+        if not path:
+            return
+
+        headers = [
+            "DisplayName", "GivenName", "Surname", "UPN", "Domain",
+            "Password", "JobTitle", "CompanyName", "Department", "City",
+            "Country", "State", "OfficeLocation", "Manager", "Sponsors",
+            "AccountEnabled", "UsageLocation", "PreferredDataLocation",
+            "AgeGroup", "LegalAgeGroup", "MinorConsent", "AccessPackage"
+        ]
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+            QMessageBox.information(self, "CSV Created", f"Template saved at:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save CSV:\n{e}")
+
+    def process_bulk_creation(self):
+        if not hasattr(self, "csv_path") or not self.csv_path:
+            QMessageBox.warning(self, "No CSV", "Please drop a CSV file first.")
+            return
+
+        QMessageBox.information(self, "Processing", f"Processing users from:\n{self.csv_path}")
+        # TODO: call your PowerShell script or bulk creation logic
+
+    def handle_csv_drop(self, file_path: str):
+        """Handle CSV dropped in the drop zone."""
+        try:
+            self.load_dropped_csv(file_path)  # your existing CSV loader
+            QMessageBox.information(self, "CSV Loaded", f"CSV loaded: {os.path.basename(file_path)}")
+            self.show_named_page("dropped_csv")  # Switch directly to Dropped CSV page
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
+
+    def process_dropped_csv(self):
+        """Triggered when 'Process CSV' button is clicked."""
+        # TODO: Add bulk create logic here
+        QMessageBox.information(self, "Processing", "Processing dropped CSV for bulk user creation...")
+
+    def load_domains(self):
+        try:
+            import json
+            path = os.path.join(os.path.dirname(__file__), "json", "domains.json")
+            with open(path, "r") as f:
+                data = json.load(f)
+                self.field_domain.clear()
+                self.field_domain.addItems(data.get("domains", []))
+        except Exception:
+            self.field_domain.addItems(["onmicrosoft.com"])  # fallback
+
+    def load_templates(self):
+        """Load template list into combobox with default entry."""
+        profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
+        os.makedirs(profiles_dir, exist_ok=True)
+
+        self.template_selector.clear()
+        self.template_selector.addItem("-- Select Template --")
+
+        for file in os.listdir(profiles_dir):
+            if file.endswith(".json"):
+                self.template_selector.addItem(file.replace(".json", ""))
+
+    def save_template(self):
+        from PyQt6.QtWidgets import QInputDialog
+
+        # Ask template name
+        name, ok = QInputDialog.getText(self, "Save Template", "Enter template name:")
+        if not ok or not name.strip():
+            return
+
+        # Collect all fields dynamically
+        template = {}
+
+        # Define all fields we want to save (mirror Create User form)
+        field_map = {
+            "DisplayName": self.field_displayname,
+            "GivenName": self.field_givenname,
+            "Surname": self.field_surname,
+            "UPN": self.field_upn,
+            "Domain": self.field_domain,
+            "Password": self.field_password,
+            "JobTitle": self.field_jobtitle,
+            "CompanyName": self.field_company,
+            "Department": self.field_department,
+            "City": self.field_city,
+            "Country": self.field_country,
+            "State": self.field_state,
+            "OfficeLocation": self.field_office,
+            "Manager": self.field_manager,
+            "Sponsors": self.field_sponsors,
+            "AccountEnabled": self.field_accountenabled,
+            "UsageLocation": self.field_usagelocation,
+            "PreferredDataLocation": self.field_preferreddatalocation,
+            "AgeGroup": self.field_agegroup,
+            "LegalAgeGroupClassification": self.field_legalage,
+            "ConsentProvidedForMinor": self.field_minorconsent,
+            "AccessPackage": self.field_accesspackage,
+            "EmployeeId": self.field_employeeid,
+            "Zip": self.field_zip,
+            "StreetAddress": self.field_street,
+            "BusinessPhone": self.field_businessphone,
+            "MobilePhone": self.field_mobilephone,
+            "Fax": self.field_fax,
+            "ProxyAddresses": self.field_proxy,
+            "Email": self.field_email,
+            "OtherMails": self.field_othermails,
+            "ImAddresses": self.field_im,
+            "MailNickname": self.field_mailnickname,
+            "EmployeeHireDate": (
+                self.field_hiredate.date().toString("yyyy-MM-dd")
+                if hasattr(self.field_hiredate, "date")
+                else self.field_hiredate.text().strip()
+            ),
+            "EmployeeOrgData": self.field_orgdata,
+        }
+
+        # Handle QLineEdit vs QComboBox
+        for key, widget in field_map.items():
+            if widget is None:
+                continue
+            if hasattr(widget, "currentText"):  # QComboBox
+                template[key] = widget.currentText().strip()
+            elif hasattr(widget, "text"):  # QLineEdit
+                template[key] = widget.text().strip()
+
+        # Save under Profiles/
+        profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
+        os.makedirs(profiles_dir, exist_ok=True)
+
+        path = os.path.join(profiles_dir, f"{name}.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(template, f, indent=4, ensure_ascii=False)
+            QMessageBox.information(self, "Success", f"Template '{name}' saved.")
+            self.load_templates()  # Refresh combobox
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save template:\n{e}")
+
+    def update_current_template(self):
+        """Update the currently selected template with current field values."""
+        current_template = self.template_selector.currentText().strip()
+
+        if not current_template or current_template == "-- Select Template --":
+            QMessageBox.warning(self, "No Template Selected", "Please select a template to update.")
+            return
+
+        # Collect field values
+        template = {
+            "DisplayName": self.field_displayname.text().strip(),
+            "GivenName": self.field_givenname.text().strip(),
+            "Surname": self.field_surname.text().strip(),
+            "UPN": self.field_upn.text().strip(),
+            "Domain": self.field_domain.currentText(),
+            "Password": self.field_password.text().strip(),
+            "JobTitle": self.field_jobtitle.currentText().strip() if isinstance(self.field_jobtitle,
+                                                                                QComboBox) else self.field_jobtitle.text().strip(),
+            "CompanyName": self.field_company.currentText().strip() if isinstance(self.field_company,
+                                                                                  QComboBox) else self.field_company.text().strip(),
+            "Department": self.field_department.currentText().strip() if isinstance(self.field_department,
+                                                                                    QComboBox) else self.field_department.text().strip(),
+            "City": self.field_city.currentText().strip() if isinstance(self.field_city,
+                                                                        QComboBox) else self.field_city.text().strip(),
+            "Country": self.field_country.currentText().strip() if isinstance(self.field_country,
+                                                                              QComboBox) else self.field_country.text().strip(),
+            "State": self.field_state.currentText().strip() if isinstance(self.field_state,
+                                                                          QComboBox) else self.field_state.text().strip(),
+            "OfficeLocation": self.field_office.currentText().strip() if isinstance(self.field_office,
+                                                                                    QComboBox) else self.field_office.text().strip(),
+            "Manager": self.field_manager.currentText().strip() if isinstance(self.field_manager,
+                                                                              QComboBox) else self.field_manager.text().strip(),
+            "Sponsors": self.field_sponsors.currentText().strip() if isinstance(self.field_sponsors,
+                                                                                QComboBox) else self.field_sponsors.text().strip(),
+            "AccountEnabled": self.field_accountenabled.currentText().strip() if isinstance(self.field_accountenabled,
+                                                                                            QComboBox) else self.field_accountenabled.text().strip(),
+            "UsageLocation": self.field_usagelocation.currentText().strip() if isinstance(self.field_usagelocation,
+                                                                                          QComboBox) else self.field_usagelocation.text().strip(),
+            "PreferredDataLocation": self.field_preferreddatalocation.currentText().strip() if isinstance(
+                self.field_preferreddatalocation, QComboBox) else self.field_preferreddatalocation.text().strip(),
+            "AgeGroup": self.field_agegroup.currentText().strip() if isinstance(self.field_agegroup,
+                                                                                QComboBox) else self.field_agegroup.text().strip(),
+            "LegalAgeGroup": self.field_legalage.currentText().strip() if isinstance(self.field_legalage,
+                                                                                     QComboBox) else self.field_legalage.text().strip(),
+            "MinorConsent": self.field_minorconsent.currentText().strip() if isinstance(self.field_minorconsent,
+                                                                                        QComboBox) else self.field_minorconsent.text().strip(),
+            "AccessPackage": self.field_accesspackage.currentText().strip() if isinstance(self.field_accesspackage,
+                                                                                          QComboBox) else self.field_accesspackage.text().strip(),
+        }
+
+        profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
+        path = os.path.join(profiles_dir, f"{current_template}.json")
+
+        try:
+            with open(path, "w") as f:
+                json.dump(template, f, indent=4)
+            QMessageBox.information(self, "Success", f"Template '{current_template}' updated.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update template:\n{e}")
+
+    def clear_all_fields(self):
+        """Clear all QLineEdit, QComboBox, and QDateEdit fields, and reset template combobox."""
+        field_map = [
+            self.field_displayname, self.field_givenname, self.field_surname,
+            self.field_upn, self.field_employeeid, self.field_zip, self.field_street,
+            self.field_businessphone, self.field_mobilephone, self.field_fax,
+            self.field_proxy, self.field_email, self.field_othermails,
+            self.field_im, self.field_mailnickname, self.field_orgdata,
+            self.field_password, self.field_jobtitle, self.field_company,
+            self.field_department, self.field_city, self.field_country,
+            self.field_state, self.field_office, self.field_manager,
+            self.field_sponsors, self.field_accountenabled, self.field_usagelocation,
+            self.field_preferreddatalocation, self.field_agegroup, self.field_legalage,
+            self.field_minorconsent, self.field_accesspackage
+        ]
+
+        for widget in field_map:
+            if hasattr(widget, "clear"):
+                widget.clear()
+            if isinstance(widget, QComboBox):
+                widget.setCurrentIndex(-1)  # reset selection
+
+        # Special case: QDateEdit (Employee Hire Date)
+        try:
+            self.field_hiredate.clear()
+        except Exception:
+            pass
+
+        # Reset template combobox to default value
+        if self.template_selector.count() > 0:
+            self.template_selector.setCurrentIndex(0)  # "-- Select Template --"
+
+    def process_display_name(self):
+        """ Autofill First Name, Last Name, and UPN when Display Name is typed """
+        display_name = self.field_displayname.text().strip()
+
+        # If cleared → reset linked fields
+        if not display_name:
+            self.field_givenname.clear()
+            self.field_surname.clear()
+            self.field_upn.clear()
+            return
+
+        name_parts = display_name.split()
+
+        # First name = everything until we hit an ALL-CAPS word
+        first_name_parts = []
+        last_name_parts = []
+
+        for part in name_parts:
+            if part.isupper():  # Last name marker
+                last_name_parts.append(part)
+            elif last_name_parts:  # After CAPS starts, keep grouping in last name
+                last_name_parts.append(part)
+            else:
+                first_name_parts.append(part)
+
+        first_name = " ".join(first_name_parts).capitalize()
+        last_name = " ".join(last_name_parts).upper()
+
+        # Build UPN → lowercase + remove spaces in last name
+        domain = self.field_domain.currentText().strip()
+        if last_name:
+            upn_last = last_name.replace(" ", "").lower()
+        else:
+            upn_last = ""
+
+        if domain:
+            upn = f"{first_name.lower().replace(' ', '')}.{upn_last}@{domain}"
+        else:
+            upn = f"{first_name.lower().replace(' ', '')}.{upn_last}"
+
+        # Update fields
+        self.field_givenname.setText(first_name)
+        self.field_surname.setText(last_name)
+        self.field_upn.setText(upn)
+
+    def apply_template(self):
+        """Apply the selected template to all fields."""
+        name = self.template_selector.currentText()
+        if not name:
+            return
+
+        profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
+        path = os.path.join(profiles_dir, f"{name}.json")
+
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                tpl = json.load(f)
+
+            # Map all template keys to fields
+            field_map = {
+                "DisplayName": self.field_displayname,
+                "GivenName": self.field_givenname,
+                "Surname": self.field_surname,
+                "UPN": self.field_upn,
+                "Domain": self.field_domain,
+                "Password": self.field_password,
+                "JobTitle": self.field_jobtitle,
+                "CompanyName": self.field_company,
+                "Department": self.field_department,
+                "City": self.field_city,
+                "Country": self.field_country,
+                "State": self.field_state,
+                "OfficeLocation": self.field_office,
+                "Manager": self.field_manager,
+                "Sponsors": self.field_sponsors,
+                "AccountEnabled": self.field_accountenabled,
+                "UsageLocation": self.field_usagelocation,
+                "PreferredDataLocation": self.field_preferreddatalocation,
+                "AgeGroup": self.field_agegroup,
+                "LegalAgeGroupClassification": self.field_legalage,
+                "ConsentProvidedForMinor": self.field_minorconsent,
+                "AccessPackage": self.field_accesspackage,
+                "EmployeeId": self.field_employeeid,
+                "Zip": self.field_zip,
+                "StreetAddress": self.field_street,
+                "BusinessPhone": self.field_businessphone,
+                "MobilePhone": self.field_mobilephone,
+                "Fax": self.field_fax,
+                "ProxyAddresses": self.field_proxy,
+                "Email": self.field_email,
+                "OtherMails": self.field_othermails,
+                "ImAddresses": self.field_im,
+                "MailNickname": self.field_mailnickname,
+                "EmployeeHireDate": self.field_hiredate,
+                "EmployeeOrgData": self.field_orgdata,
+            }
+
+            for key, widget in field_map.items():
+                if widget is None:
+                    continue
+                value = tpl.get(key, "")
+
+                if hasattr(widget, "setCurrentText"):  # QComboBox
+                    widget.setCurrentText(value)
+                elif hasattr(widget, "setText"):  # QLineEdit
+                    widget.setText(value)
+                elif key == "EmployeeHireDate" and hasattr(widget, "setDate"):  # QDateEdit
+                    from PyQt6.QtCore import QDate
+                    try:
+                        date = QDate.fromString(value, "yyyy-MM-dd")
+                        if date.isValid():
+                            widget.setDate(date)
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load template:\n{e}")
+
+    def get_default_csv_path(self):
+        """Get the default CSV directory (from config.json or fallback)."""
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                return config.get("default_csv_path", os.path.join(os.path.dirname(__file__), "Database_Identity"))
+            except Exception as e:
+                print(f"[DEBUG] Failed to load config.json: {e}")
+        return os.path.join(os.path.dirname(__file__), "Database_Identity")
+
+    def try_populate_comboboxes(self):
+        """Try to populate comboboxes if a CSV is loaded, using default path if set."""
+        path = None
+
+        # Case 1: last loaded file from identity combo
+        if hasattr(self, "identity_dash_selector") and self.identity_dash_selector.currentText().endswith(".csv"):
+            path = self.identity_dash_selector.currentText()
+
+        else:
+            # Case 2: look in configured default path
+            default_dir = self.get_default_csv_path()
+            if os.path.exists(default_dir):
+                files = [f for f in os.listdir(default_dir) if f.endswith(".csv")]
+                if files:
+                    latest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(default_dir, f)))
+                    path = os.path.join(default_dir, latest_file)
+
+        # Skip silently if no path
+        if path and os.path.exists(path):
+            self.populate_comboboxes_from_csv(path)
+            return
+
+        # Update selector too
+        if hasattr(self, "identity_dash_selector"):
+            self.identity_dash_selector.clear()
+            self.identity_dash_selector.addItem(path)
+
+    def set_default_path(self):
+        """Let user select a default CSV directory (e.g. SharePoint sync folder)."""
+        folder = QFileDialog.getExistingDirectory(self, "Select Default CSV Directory")
+        if not folder:
+            return
+
+        try:
+            # Save to a config file so it persists
+            config_path = os.path.join(os.path.dirname(__file__), "config.json")
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+
+            config["default_csv_path"] = folder
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=4)
+
+            QMessageBox.information(self, "Success", f"Default path set to:\n{folder}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to set default path:\n{e}")
+
+        self.try_populate_comboboxes()
+
+    def populate_comboboxes_from_csv(self, csv_path: str):
+        """Reads the CSV and fills comboboxes with unique values if columns match."""
+        try:
+            df = pd.read_csv(csv_path, dtype=str, sep=";").fillna("")
+
+            def safe_set(combo_attr, column_name):
+                if hasattr(self, combo_attr) and column_name in df.columns:
+                    combo = getattr(self, combo_attr)
+                    # build unique, trimmed, sorted values
+                    values = (
+                        df[column_name].astype(str).fillna("")
+                        .str.strip()
+                        .replace({"nan": ""})
+                        .drop_duplicates()
+                        .sort_values()
+                        .tolist()
+                    )
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItem("")  # allow empty
+                    combo.addItems([v for v in values if v])  # skip blanks
+                    combo.blockSignals(False)
+
+                    # 🔹 attach fresh completer (case-insensitive, popup)
+                    combo.setEditable(True)
+                    comp = QCompleter(values, combo)
+                    comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                    comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                    combo.setCompleter(comp)
+
+            # map CSV -> widgets (only if both exist)
+            safe_set("field_jobtitle", "JobTitle")
+            safe_set("field_company", "CompanyName")
+            safe_set("field_department", "Department")
+            safe_set("field_city", "City")
+            safe_set("field_country", "Country")
+            safe_set("field_state", "State")
+            safe_set("field_office", "OfficeLocation")
+            safe_set("field_accountenabled", "AccountEnabled")
+            safe_set("field_usagelocation", "UsageLocation")
+            safe_set("field_preferreddatalocation", "PreferredDataLocation")
+            safe_set("field_agegroup", "AgeGroup")
+            safe_set("field_legalage", "LegalAgeGroupClassification")
+            safe_set("field_minorconsent", "ConsentProvidedForMinor")
+            safe_set("field_domain", "Domain name")  # <- your CSV header
+            safe_set("field_manager", "ManagerDisplayName")
+            safe_set("field_sponsors", "SponsorDisplayName")
+            safe_set("field_accesspackage", "Access Package")
+
+        except Exception as e:
+            print(f"Failed to populate comboboxes: {e}")
+
+    def make_autocomplete_combobox(self):
+        cb = QComboBox()
+        cb.setEditable(True)  # must be editable for completer to work
+        cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        completer = QCompleter()
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        cb.setCompleter(completer)
+        return cb
+
+    def generate_password(self, length: int = 12) -> str:
+        chars = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+        return ''.join(random.choice(chars) for _ in range(length))
+
+    def on_displayname_finished(self):
+        """After finishing Display Name, autofill and generate password."""
+        self.process_display_name()  # keep names & UPN synced
+
+        if hasattr(self, "field_password") and self.field_password is not None:
+            pwd = self.generate_password()
+            self.field_password.setText(pwd)
+
+    def load_dropped_csv(self, file_path: str):
+        """Load a dropped CSV into the Dropped CSV table."""
+        try:
+            import csv
+            with open(file_path, newline='', encoding="utf-8") as f:
+                # Auto-detect delimiter
+                sample = f.read(1024)
+                f.seek(0)
+                dialect = csv.Sniffer().sniff(sample, delimiters=";,")
+                reader = csv.reader(f, dialect)
+                rows = list(reader)
+
+            if not rows:
+                raise ValueError("CSV is empty")
+
+            # Configure table
+            self.table_dropped_csv.setRowCount(len(rows) - 1)
+            self.table_dropped_csv.setColumnCount(len(rows[0]))
+            self.table_dropped_csv.setHorizontalHeaderLabels(rows[0])
+
+            # Fill table
+            for i, row in enumerate(rows[1:]):  # skip header
+                for j, val in enumerate(row):
+                    self.table_dropped_csv.setItem(i, j, QTableWidgetItem(val))
+
+            self.show_named_page("dropped_csv")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
+
+    # --- Dashboard update ---
+    def update_dashboard_from_csv(self, combo, layout, kind):
+        """
+        Builds a rich dashboard from the selected CSV:
+          - 12 stat cards (total, enabled/disabled, guests, cloud-only/synced, licensed,
+            MFA capable, stale >90d, never signed in, with devices, no manager)
+          - 3 small “Top …” tables (Departments, Countries, Domains)
+        """
+        # 1) Clear existing widgets
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item:
+                widget = item.widget()
+                if widget is not None:
+                    layout.removeWidget(widget)
+                    widget.deleteLater()
+
+        # 2) Load CSV
+        path = combo.currentText()
+        if not path.endswith(".csv"):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        try:
+            df = pd.read_csv(path, dtype=str, sep=";").fillna("")
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+            return
+
+        # -------- Helpers --------
+        def s(name: str) -> pd.Series:
+            """Return column as string series (safe)."""
+            if name in df.columns:
+                return df[name].astype(str).fillna("")
+            return pd.Series([""] * total, dtype=str)
+
+        def b(name: str) -> pd.Series:
+            """Return boolean series from 'True'/'False' strings."""
+            return s(name).str.lower().eq("true")
+
+        # -------- Metrics --------
+        enabled = b("AccountEnabled").sum()
+        disabled = total - enabled
+
+        guests = s("UserType").str.lower().str.contains("guest").sum()
+        synced = b("OnPremisesSyncEnabled").sum()
+        cloud_only = total - synced
+
+        licensed = s("LicensesSkuType").str.strip().ne("").sum()
+
+        # MFA-capable if any auth method/value present
+        mfa_capable_series = (
+                s("AuthenticationMethod").str.strip().ne("") |
+                b("WindowsHelloEnabled") |
+                b("SoftwareOATHEnabled") |
+                s("MicrosoftAuthenticatorDisplayName").str.strip().ne("") |
+                s("FIDO2DisplayName").str.strip().ne("") |
+                s("SMSPhoneNumber").str.strip().ne("") |
+                s("EmailAuthAddress").str.strip().ne("")
+        )
+        mfa_capable = int(mfa_capable_series.sum())
+
+        # Last sign-in recency
+        lsi = pd.to_datetime(s("LastSignInDateTime"), errors="coerce", utc=True)
+        never_signed = int(lsi.isna().sum())
+        inactive_90 = int(((pd.Timestamp.utcnow() - lsi) > pd.Timedelta(days=90)).fillna(False).sum())
+
+        # Devices & manager
+        with_devices = s("Devices").str.strip().ne("").sum()
+        no_manager = s("ManagerDisplayName").str.strip().eq("").sum()
+
+        # -------- Card factory --------
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #1a1a1a
+                    );
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #333333
+                    );
+                }}
+                QLabel {{
+                    color: white;
+                    background: transparent;   /* 👈 prevent labels from drawing boxes */
+                }}
+            """)
+
+            # Drop shadow
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            vbox = QVBoxLayout(card)
+
+            # Title row
+            title_row = QHBoxLayout()
+            if icon:
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                title_row.addWidget(icon_lbl)
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+            title_row.addWidget(title_lbl)
+            title_row.addStretch()
+            vbox.addLayout(title_row)
+
+            # Value
+            value_lbl = QLabel(str(value))
+            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+            vbox.addWidget(value_lbl)
+
+            # Subtitle
+            if subtitle:
+                sub_lbl = QLabel(subtitle)
+                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                vbox.addWidget(sub_lbl)
+
+            # Make clickable
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda event: on_click()
+
+            return card
+
+        # -------- Place 12 stat cards (3 cols x 4 rows) --------
+        cards = [
+            ("Identity Total", total, "#34495e", "👥", "Total users"),
+            ("Enabled", enabled, "#27ae60", "✅", "Active accounts"),
+            ("Disabled", disabled, "#c0392b", "❌", "Inactive accounts"),
+
+            ("Guests", guests, "#8e44ad", "🌍", "External users"),
+            ("Cloud-only", cloud_only, "#2980b9", "☁️", "Not synced"),
+            ("Synced", synced, "#16a085", "🔄", "Hybrid AD"),
+
+            ("Licensed", licensed, "#2c3e50", "🧾", "Users with licenses"),
+            ("MFA Capable", mfa_capable, "#f39c12", "🔐", f"{(mfa_capable / total) * 100:.1f}% of users"),
+            ("Stale > 90 days", inactive_90, "#d35400", "⏳", "No sign-in in 90+ days"),
+
+            ("Never signed in", never_signed, "#7f8c8d", "🚫", "No recorded sign-in"),
+            ("With devices", int(with_devices), "#2980b9", "💻", "Registered devices"),
+            ("No manager", int(no_manager), "#95a5a6", "🧭", "Manager not set"),
+        ]
+
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub in cards:
+            card = make_card(
+                title, val, col_hex, icon, sub,
+                on_click=lambda t=title: self.filter_identity_table(t)
+            )
+            layout.addWidget(card, r, c)
+            c += 1
+            if c == cols:
+                r += 1
+                c = 0
+
+        # -------- Small "Top ..." tables (Departments, Countries, Domains) --------
+        def make_table(title, series: pd.Series, n=None):
+            """
+            Creates a taller card with a scrollable table.
+            n=None → show all values instead of just head(n).
+            """
+            # value counts (ignore blanks)
+            vc = series[series.str.strip().ne("")].value_counts()
+            if n:
+                vc = vc.head(n)
+
+            frame = QFrame()
+            frame.setStyleSheet("""
+                QFrame {
+                    background-color: #2c3e50;
+                    border-radius: 12px;
+                    padding: 12px;
+                }
+                QLabel { color: white; }
+                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+            """)
+            v = QVBoxLayout(frame)
+
+            # Title
+            t_lbl = QLabel(title)
+            t_lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: white;")
+            v.addWidget(t_lbl)
+
+            # Table
+            table = QTableWidget()
+            table.setRowCount(len(vc))
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["Value", "Count"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+            # 🔹 New: allow horizontal scroll for long values
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # Value column
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Count column
+
+            # Fill rows
+            for i, (k, cnt) in enumerate(vc.items()):
+                item_val = QTableWidgetItem(str(k))
+                item_cnt = QTableWidgetItem(str(cnt))
+                item_val.setForeground(Qt.GlobalColor.white)
+                item_cnt.setForeground(Qt.GlobalColor.white)
+                table.setItem(i, 0, item_val)
+                table.setItem(i, 1, item_cnt)
+
+            table.resizeColumnsToContents()  # ensure proper width
+            table.setFixedHeight(250)  # 🔹 adjust height
+            v.addWidget(table)
+            return frame
+
+        # Extract domain from UPN
+        domains = s("UserPrincipalName").str.split("@").str[-1]
+        layout.addWidget(make_table("Top Departments", s("Department")), r, 0)
+        layout.addWidget(make_table("Top Countries", s("Country")), r, 1)
+        layout.addWidget(make_table("Top Domains", domains), r, 2)
+
+    def show_filtered_users(self, column_name, filter_value):
+        """Switch to Identity tab and show only users matching filter."""
+        self.show_named_page("identity")
+
+        if hasattr(self, "current_df"):
+            try:
+                filtered = self.current_df[self.current_df[column_name] == filter_value]
+                self.load_dataframe_into_table(filtered)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Filtering failed:\n{e}")
+
+    def reload_app(self):
+        """Restart the entire application."""
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = OffboardManager()
+    window.show()
+    sys.exit(app.exec())

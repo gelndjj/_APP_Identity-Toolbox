@@ -1,4 +1,4 @@
-import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time
+import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time, tempfile
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTableWidget,
@@ -112,6 +112,38 @@ class PowerShellWorker(QThread):
             else:
                 err = result.stderr.strip() or result.stdout.strip()
                 self.finished.emit("error", err)
+        except Exception as e:
+            self.finished.emit("error", str(e))
+
+class StreamingPowerShellWorker(QThread):
+    output = pyqtSignal(str)          # live log lines
+    finished = pyqtSignal(str, str)   # status, message
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        try:
+            process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+
+            for line in iter(process.stdout.readline, ""):
+                if line:
+                    self.output.emit(line.strip())
+
+            process.stdout.close()
+            retcode = process.wait()
+
+            if retcode == 0:
+                self.finished.emit("success", "Process completed successfully.")
+            else:
+                self.finished.emit("error", f"Exited with code {retcode}")
+
         except Exception as e:
             self.finished.emit("error", str(e))
 
@@ -498,7 +530,8 @@ class OffboardManager(QWidget):
         self.field_mobilephone.setPlaceholderText("+1 555-987-6543")
 
         self.field_fax = QLineEdit()
-        self.field_fax.setPlaceholderText("+1 555-555-5555")
+        self.field_fax.setPlaceholderText("This field is not editable.")
+        self.field_fax.setReadOnly(True)
 
         self.field_proxy = QLineEdit()
         self.field_proxy.setPlaceholderText("Editable in Exchange.")
@@ -555,10 +588,17 @@ class OffboardManager(QWidget):
         self.field_office = self.make_autocomplete_combobox()
         self.field_manager = self.make_autocomplete_combobox()
         self.field_sponsors = self.make_autocomplete_combobox()
+
         self.field_accountenabled = self.make_autocomplete_combobox()
+        self.field_accountenabled.addItems(["True", "False"])
+        self.field_accountenabled.setCurrentText("True")  # default value
+
         self.field_usagelocation = self.make_autocomplete_combobox()
         self.field_preferreddatalocation = self.make_autocomplete_combobox()
+
         self.field_agegroup = self.make_autocomplete_combobox()
+        self.field_agegroup.addItems(["Minor", "NotAdult", "Adult"])
+
         self.field_legalage = self.make_autocomplete_combobox()
         self.field_minorconsent = self.make_autocomplete_combobox()
         self.field_accesspackage = self.make_autocomplete_combobox()
@@ -878,6 +918,12 @@ class OffboardManager(QWidget):
                 if name == "create_user":
                     self.try_populate_comboboxes()
 
+                    # 🔹 Ensure Account Enabled combobox always defaults to True
+                    if hasattr(self, "field_accountenabled"):
+                        if self.field_accountenabled.findText("True") == -1:
+                            self.field_accountenabled.addItems(["True", "False"])
+                        self.field_accountenabled.setCurrentText("True")
+
             else:
                 QMessageBox.warning(self, "Navigation Error", f"Page '{name}' not found in stacked widget.")
         else:
@@ -921,27 +967,23 @@ class OffboardManager(QWidget):
         self.show_named_page("console")  # Switch to console tab
 
     # --- NEW FUNCTION ---
-    def run_powershell_with_output(self, script_path, args=[]):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
-
-        # Clear console before new run
+    def run_powershell_with_output(self, script_path, params: dict):
         self.console_output.clear()
 
-        # Create worker
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
-        self.worker.output.connect(lambda line: self.console_output.append(line))
-        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
-        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        # Build command array
+        command = ["pwsh", "-File", script_path] + [
+            str(item) for k, v in params.items() for item in (f"-{k}", v)
+        ]
 
-        # Refresh logs and csv when done
-        self.worker.finished.connect(self.refresh_log_list)
-        self.worker.finished.connect(self.refresh_csv_lists)
+        # Use the NEW worker here
+        self.stream_worker = StreamingPowerShellWorker(command)
+        self.stream_worker.output.connect(lambda line: self.console_output.append(line))
+        self.stream_worker.finished.connect(
+            lambda status, msg: QMessageBox.information(self, "Result", msg)
+            if status == "success" else QMessageBox.critical(self, "Error", msg)
+        )
 
-        # Start worker
-        self.worker.start()
-
-        # Show console tab while running
+        self.stream_worker.start()
         self.show_named_page("console")
 
     def open_context_menu(self, pos):
@@ -1279,32 +1321,72 @@ class OffboardManager(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to upload CSV:\n{e}")
 
     def create_user(self):
-        displayname = self.field_displayname.text().strip()
-        givenname = self.field_givenname.text().strip()
-        surname = self.field_surname.text().strip()
-        upn_local = self.field_upn.text().strip()
-        domain = self.field_domain.currentText().strip()
-        jobtitle = self.field_jobtitle.text().strip()
-        department = self.field_department.text().strip()
+        # Collect values safely → auto-detect widget type
+        def safe_val(attr):
+            if not hasattr(self, attr):
+                return ""
+            widget = getattr(self, attr)
 
-        if not displayname or not givenname or not surname or not upn_local:
-            QMessageBox.warning(self, "Missing Fields", "Please fill all required fields.")
-            return
+            if isinstance(widget, QLineEdit):
+                return widget.text().strip()
+            elif isinstance(widget, QComboBox):
+                return widget.currentText().strip()
+            elif isinstance(widget, QDateEdit):
+                return widget.date().toString("yyyy-MM-dd")  # format date
+            return ""
 
-        upn = f"{upn_local}@{domain}"
-        script_path = os.path.abspath("create_user.ps1")
+        # Handle UPN cleanly (avoid double domain)
+        upn_local = safe_val("field_upn")
+        domain = safe_val("field_domain").lstrip("@")
 
-        args = [
-            "-DisplayName", displayname,
-            "-GivenName", givenname,
-            "-Surname", surname,
-            "-UserPrincipalName", upn,
-            "-JobTitle", jobtitle,
-            "-Department", department
-        ]
+        if "@" in upn_local:  # If user typed full UPN already
+            upn = upn_local.strip()
+        else:
+            upn = f"{upn_local}@{domain}"
 
-        self.show_named_page("console")  # Switch to console
-        self.run_powershell_with_output(script_path, args)
+        # Build user data row
+        user_data = {
+            "Display Name": safe_val("field_displayname"),
+            "First name": safe_val("field_givenname"),
+            "Last name": safe_val("field_surname"),
+            "User Principal Name": upn,  # ✅ final full UPN only once
+            "Password": safe_val("field_password"),
+            "Job title": safe_val("field_jobtitle"),
+            "Company name": safe_val("field_company"),
+            "Department": safe_val("field_department"),
+            "Employee ID": safe_val("field_employeeid"),
+            "Employee type": safe_val("field_employeetype"),
+            "Office location": safe_val("field_office"),
+            "Street address": safe_val("field_street"),
+            "City": safe_val("field_city"),
+            "State or province": safe_val("field_state"),
+            "ZIP or postal code": safe_val("field_zip"),
+            "Country or region": safe_val("field_country"),
+            "Usage location": safe_val("field_usagelocation"),
+            "Preferred data location": safe_val("field_preferreddata"),
+            "Business phone": safe_val("field_businessphone"),
+            "Mobile phone": safe_val("field_mobilephone"),
+            "Fax number": safe_val("field_fax"),
+            "Other emails": safe_val("field_otheremails"),
+            "Proxy addresses": safe_val("field_proxy"),
+            "IM addresses": safe_val("field_im"),
+        }
+
+        # Create temporary CSV
+        tmp_csv = os.path.join(tempfile.gettempdir(), "new_user.csv")
+        with open(tmp_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=user_data.keys())
+            writer.writeheader()
+            writer.writerow(user_data)
+
+        # Run PowerShell script with CSV path
+        script_path = os.path.abspath("Powershell_Scripts/create_user.ps1")
+
+        params = {
+            "CsvPath": tmp_csv
+        }
+
+        self.run_powershell_with_output(script_path, params)
 
     def generate_fake_users(self, domain, count):
         if count <= 0:
@@ -1582,54 +1664,64 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No Template Selected", "Please select a template to update.")
             return
 
-        # Collect field values
-        template = {
-            "DisplayName": self.field_displayname.text().strip(),
-            "GivenName": self.field_givenname.text().strip(),
-            "Surname": self.field_surname.text().strip(),
-            "UPN": self.field_upn.text().strip(),
-            "Domain": self.field_domain.currentText(),
-            "Password": self.field_password.text().strip(),
-            "JobTitle": self.field_jobtitle.currentText().strip() if isinstance(self.field_jobtitle,
-                                                                                QComboBox) else self.field_jobtitle.text().strip(),
-            "CompanyName": self.field_company.currentText().strip() if isinstance(self.field_company,
-                                                                                  QComboBox) else self.field_company.text().strip(),
-            "Department": self.field_department.currentText().strip() if isinstance(self.field_department,
-                                                                                    QComboBox) else self.field_department.text().strip(),
-            "City": self.field_city.currentText().strip() if isinstance(self.field_city,
-                                                                        QComboBox) else self.field_city.text().strip(),
-            "Country": self.field_country.currentText().strip() if isinstance(self.field_country,
-                                                                              QComboBox) else self.field_country.text().strip(),
-            "State": self.field_state.currentText().strip() if isinstance(self.field_state,
-                                                                          QComboBox) else self.field_state.text().strip(),
-            "OfficeLocation": self.field_office.currentText().strip() if isinstance(self.field_office,
-                                                                                    QComboBox) else self.field_office.text().strip(),
-            "Manager": self.field_manager.currentText().strip() if isinstance(self.field_manager,
-                                                                              QComboBox) else self.field_manager.text().strip(),
-            "Sponsors": self.field_sponsors.currentText().strip() if isinstance(self.field_sponsors,
-                                                                                QComboBox) else self.field_sponsors.text().strip(),
-            "AccountEnabled": self.field_accountenabled.currentText().strip() if isinstance(self.field_accountenabled,
-                                                                                            QComboBox) else self.field_accountenabled.text().strip(),
-            "UsageLocation": self.field_usagelocation.currentText().strip() if isinstance(self.field_usagelocation,
-                                                                                          QComboBox) else self.field_usagelocation.text().strip(),
-            "PreferredDataLocation": self.field_preferreddatalocation.currentText().strip() if isinstance(
-                self.field_preferreddatalocation, QComboBox) else self.field_preferreddatalocation.text().strip(),
-            "AgeGroup": self.field_agegroup.currentText().strip() if isinstance(self.field_agegroup,
-                                                                                QComboBox) else self.field_agegroup.text().strip(),
-            "LegalAgeGroup": self.field_legalage.currentText().strip() if isinstance(self.field_legalage,
-                                                                                     QComboBox) else self.field_legalage.text().strip(),
-            "MinorConsent": self.field_minorconsent.currentText().strip() if isinstance(self.field_minorconsent,
-                                                                                        QComboBox) else self.field_minorconsent.text().strip(),
-            "AccessPackage": self.field_accesspackage.currentText().strip() if isinstance(self.field_accesspackage,
-                                                                                          QComboBox) else self.field_accesspackage.text().strip(),
+        # 🔹 Collect all fields the same way as save_template
+        field_map = {
+            "DisplayName": self.field_displayname,
+            "GivenName": self.field_givenname,
+            "Surname": self.field_surname,
+            "UPN": self.field_upn,
+            "Domain": self.field_domain,
+            "Password": self.field_password,
+            "JobTitle": self.field_jobtitle,
+            "CompanyName": self.field_company,
+            "Department": self.field_department,
+            "City": self.field_city,
+            "Country": self.field_country,
+            "State": self.field_state,
+            "OfficeLocation": self.field_office,
+            "Manager": self.field_manager,
+            "Sponsors": self.field_sponsors,
+            "AccountEnabled": self.field_accountenabled,
+            "UsageLocation": self.field_usagelocation,
+            "PreferredDataLocation": self.field_preferreddatalocation,
+            "AgeGroup": self.field_agegroup,
+            "LegalAgeGroupClassification": self.field_legalage,
+            "ConsentProvidedForMinor": self.field_minorconsent,
+            "AccessPackage": self.field_accesspackage,
+            "EmployeeId": self.field_employeeid,
+            "Zip": self.field_zip,
+            "StreetAddress": self.field_street,
+            "BusinessPhone": self.field_businessphone,
+            "MobilePhone": self.field_mobilephone,
+            "Fax": self.field_fax,
+            "ProxyAddresses": self.field_proxy,
+            "Email": self.field_email,
+            "OtherMails": self.field_othermails,
+            "ImAddresses": self.field_im,
+            "MailNickname": self.field_mailnickname,
+            "EmployeeHireDate": (
+                self.field_hiredate.date().toString("yyyy-MM-dd")
+                if hasattr(self.field_hiredate, "date")
+                else self.field_hiredate.text().strip()
+            ),
+            "EmployeeOrgData": self.field_orgdata,
         }
+
+        template = {}
+        for key, widget in field_map.items():
+            if widget is None:
+                continue
+            if hasattr(widget, "currentText"):  # QComboBox
+                template[key] = widget.currentText().strip()
+            elif hasattr(widget, "text"):  # QLineEdit
+                template[key] = widget.text().strip()
 
         profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
         path = os.path.join(profiles_dir, f"{current_template}.json")
 
         try:
-            with open(path, "w") as f:
-                json.dump(template, f, indent=4)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(template, f, indent=4, ensure_ascii=False)
             QMessageBox.information(self, "Success", f"Template '{current_template}' updated.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to update template:\n{e}")
@@ -1771,8 +1863,9 @@ class OffboardManager(QWidget):
                     continue
                 value = tpl.get(key, "")
 
-                if hasattr(widget, "setCurrentText"):  # QComboBox
-                    widget.setCurrentText(value)
+                if isinstance(widget, QComboBox):
+                    widget.setEditable(True)  # 🔹 allow free text
+                    widget.setCurrentText(value)  # 🔹 set the saved value
                 elif hasattr(widget, "setText"):  # QLineEdit
                     widget.setText(value)
                 elif key == "EmployeeHireDate" and hasattr(widget, "setDate"):  # QDateEdit

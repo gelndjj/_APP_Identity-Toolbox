@@ -96,6 +96,8 @@ python id-toolbox.py
 	•	Add manager/sponsor assignment during creation
 	•	Multi-language support
 
+### 📸 Screenshots
+
 ### ⚖️ License
 MIT License.
 This project is provided as-is for educational and IT administration use.
@@ -103,5 +105,3 @@ This project is provided as-is for educational and IT administration use.
 ### 🤝 Contributing
 Pull requests are welcome!
 For major changes, please open an issue first to discuss what you’d like to change.
-
-### 📸 Screenshots

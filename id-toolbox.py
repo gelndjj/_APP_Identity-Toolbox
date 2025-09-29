@@ -966,14 +966,17 @@ class OffboardManager(QWidget):
         self.worker.start()
         self.show_named_page("console")  # Switch to console tab
 
-    # --- NEW FUNCTION ---
     def run_powershell_with_output(self, script_path, params: dict):
         self.console_output.clear()
 
-        # Build command array
-        command = ["pwsh", "-File", script_path] + [
-            str(item) for k, v in params.items() for item in (f"-{k}", v)
-        ]
+        # Build command array safely
+        command = ["pwsh", "-File", script_path]
+        for k, v in params.items():
+            if isinstance(v, (list, tuple)):  # multiple values
+                joined = ",".join(str(item) for item in v)
+                command.extend([f"-{k}", joined])
+            else:  # single value
+                command.extend([f"-{k}", str(v)])
 
         # Use the NEW worker here
         self.stream_worker = StreamingPowerShellWorker(command)
@@ -1002,18 +1005,14 @@ class OffboardManager(QWidget):
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
-    def disable_selected_user(self, upns: list[str]):
-        if not upns:
-            QMessageBox.warning(self, "No UPN", "Selected rows have no UPNs.")
-            return
+    def disable_selected_user(self, upns):
+        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "disable_users.ps1")
 
-        script_path = os.path.join(self.ps_scripts_dir, "disable_user.ps1")
-
-        # Join UPNs with commas into a single string
-        args = ["-upn", ",".join(upns)]
+        # Here’s the fix: wrap list in dict with the parameter name your PS script expects
+        params = {"upn": upns}
 
         self.show_named_page("console")
-        self.run_powershell_with_output(script_path, args)
+        self.run_powershell_with_output(script_path, params)
 
     def confirm_disable_users(self):
         # Collect selected UPN(s) from your identity table

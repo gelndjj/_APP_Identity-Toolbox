@@ -25,6 +25,10 @@ $users = Import-Csv -Path $CsvPath
 foreach ($user in $users) {
     $UPN = $user.'User Principal Name'
 
+    Write-Host "`n============================================================"
+    Write-Host "Processing user: $UPN"
+    Write-Host "============================================================`n"
+
     if (-not $UPN) {
         Write-Host "⚠️ Skipping row with missing UPN"
         continue
@@ -34,6 +38,8 @@ foreach ($user in $users) {
     $existingUser = Get-MgUser -Filter "userPrincipalName eq '$UPN'" -ErrorAction SilentlyContinue
 
     if ($null -eq $existingUser) {
+        Write-Host "🔎 User does not exist, creating new one..."
+
         # Define password profile
         $passwordProfile = @{
             Password = $user.Password
@@ -48,6 +54,11 @@ foreach ($user in $users) {
             MailNickname      = ($UPN.Split('@')[0] -replace '[^a-zA-Z0-9]', '')
             PasswordProfile   = $passwordProfile
         }
+
+        Write-Host "📝 Setting mandatory attributes:"
+        Write-Host "   - DisplayName       : $($user.'Display Name')"
+        Write-Host "   - UserPrincipalName : $UPN"
+        Write-Host "   - MailNickname      : $($UPN.Split('@')[0] -replace '[^a-zA-Z0-9]', '')"
 
         # Map optional attributes
         $attributeMapping = @{
@@ -75,25 +86,41 @@ foreach ($user in $users) {
         foreach ($key in $attributeMapping.Keys) {
             if (-not [string]::IsNullOrEmpty($user.$key)) {
                 $userDetails[$attributeMapping[$key]] = $user.$key
+                Write-Host "   - $($attributeMapping[$key]) : $($user.$key)"
             }
         }
 
         # Handle lists
-        if ($user.'Business phone') { $userDetails.BusinessPhones = $user.'Business phone' -split ';' }
-        if ($user.'Mobile phone')   { $userDetails.MobilePhone    = $user.'Mobile phone' } # single value
-        if ($user.'Other emails')   { $userDetails.OtherMails     = $user.'Other emails'   -split ';' }
-        if ($user.'Proxy addresses'){ $userDetails.ProxyAddresses = $user.'Proxy addresses' -split ';' }
-        if ($user.'IM addresses')   { $userDetails.IMAddresses    = $user.'IM addresses'   -split ';' }
-        if ($user.'Fax number')     { $userDetails.FaxNumber      = $user.'Fax number' } # NOTE: not in Graph user schema – needs testing
+        if ($user.'Business phone') {
+            $userDetails.BusinessPhones = $user.'Business phone' -split ';'
+            Write-Host "   - BusinessPhones : $($user.'Business phone')"
+        }
+        if ($user.'Mobile phone') {
+            $userDetails.MobilePhone = $user.'Mobile phone'
+            Write-Host "   - MobilePhone : $($user.'Mobile phone')"
+        }
+        if ($user.'Other emails') {
+            $userDetails.OtherMails = $user.'Other emails' -split ';'
+            Write-Host "   - OtherMails : $($user.'Other emails')"
+        }
+        if ($user.'Proxy addresses') {
+            $userDetails.ProxyAddresses = $user.'Proxy addresses' -split ';'
+            Write-Host "   - ProxyAddresses : $($user.'Proxy addresses')"
+        }
+        if ($user.'IM addresses') {
+            $userDetails.IMAddresses = $user.'IM addresses' -split ';'
+            Write-Host "   - IMAddresses : $($user.'IM addresses')"
+        }
 
+        Write-Host "🚀 Creating user in Entra ID..."
         try {
             $newUser = New-MgUser -BodyParameter $userDetails
-            Write-Host "✅ Created new user: $UPN (User ID: $($newUser.Id))"
+            Write-Host "✅ Created new user: $UPN (User ID: $($newUser.Id))" -ForegroundColor Green
         } catch {
-            Write-Host "❌ Failed to create user: $UPN - $_"
+            Write-Host "❌ Failed to create user: $UPN - $_" -ForegroundColor Red
             continue
         }
     } else {
-        Write-Host "⚠️ User already exists: $UPN (User ID: $($existingUser.Id))"
+        Write-Host "⚠️ User already exists: $UPN (User ID: $($existingUser.Id))" -ForegroundColor Yellow
     }
 }

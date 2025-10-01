@@ -969,24 +969,29 @@ class OffboardManager(QWidget):
     def run_powershell_with_output(self, script_path, params: dict):
         self.console_output.clear()
 
-        # Build command array safely
-        command = ["pwsh", "-File", script_path]
+        # Build params safely
+        args = []
         for k, v in params.items():
             if isinstance(v, (list, tuple)):  # multiple values
                 joined = ",".join(str(item) for item in v)
-                command.extend([f"-{k}", joined])
+                args.extend([f"-{k}", joined])
             else:  # single value
-                command.extend([f"-{k}", str(v)])
+                args.extend([f"-{k}", str(v)])
 
-        # Use the NEW worker here
-        self.stream_worker = StreamingPowerShellWorker(command)
-        self.stream_worker.output.connect(lambda line: self.console_output.append(line))
-        self.stream_worker.finished.connect(
-            lambda status, msg: QMessageBox.information(self, "Result", msg)
-            if status == "success" else QMessageBox.critical(self, "Error", msg)
-        )
+        # Create log file path
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
 
-        self.stream_worker.start()
+        # Use Logger worker with script_path + only arguments (no script twice!)
+        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+
+        # Connect signals
+        self.worker.output.connect(lambda line: self.console_output.append(line))
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
+        self.worker.finished.connect(self.refresh_log_list)
+
+        self.worker.start()
         self.show_named_page("console")
 
     def open_context_menu(self, pos):
@@ -1498,21 +1503,26 @@ class OffboardManager(QWidget):
     def on_random_user_done(self, status, msg):
         # keep error/success messages short and prevent resizing
         self.random_status.setWordWrap(True)
-        self.random_status.setFixedWidth(150)  # adjust width for your layout
+        self.random_status.setFixedWidth(150)
 
         if status == "success":
             self.random_status.setText("Random users created successfully!")
         else:
-            # show only useful part of error
             if "Authentication" in msg:
                 self.random_status.setText("Authentication error (please login).")
             elif "CSV not found" in msg:
-                self.random_status.setText(" CSV file not found.")
+                self.random_status.setText("CSV file not found.")
             else:
-                short_msg = msg.split("\n")[0]  # first line only
-                self.random_status.setText(f" {short_msg}")
+                self.random_status.setText(msg.split("\n", 1)[0])
 
-        self.random_worker = None
+        # (optional) immediately refresh the log list and select the new file
+        try:
+            self.refresh_log_list()
+            if hasattr(self, "_last_random_log"):
+                # if your log dropdown is a QComboBox you can auto-select here
+                pass
+        except Exception:
+            pass
 
     def generate_csv_template(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save CSV Template", "", "CSV Files (*.csv)")

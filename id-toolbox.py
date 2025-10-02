@@ -537,7 +537,7 @@ class OffboardManager(QWidget):
         self.field_proxy.setPlaceholderText("Editable in Exchange.")
 
         self.field_email = QLineEdit()
-        self.field_email.setPlaceholderText("johndoe@company.com")
+        self.field_email.setPlaceholderText("Provided in Exchange")
 
         self.field_othermails = QLineEdit()
         self.field_othermails.setPlaceholderText("jdoe@gmail.com")
@@ -557,6 +557,10 @@ class OffboardManager(QWidget):
         self.field_orgdata = QLineEdit()
         self.field_orgdata.setPlaceholderText("This field is not editable.")
         self.field_orgdata.setReadOnly(True)
+
+        self.field_preferreddatalocation = QLineEdit()
+        self.field_preferreddatalocation.setPlaceholderText("This field is not editable.")
+        self.field_preferreddatalocation.setReadOnly(True)
 
         # --- Right column fields (QComboBox for selection) ---
         self.field_domain = QComboBox()
@@ -594,12 +598,12 @@ class OffboardManager(QWidget):
         self.field_accountenabled.setCurrentText("True")  # default value
 
         self.field_usagelocation = self.make_autocomplete_combobox()
-        self.field_preferreddatalocation = self.make_autocomplete_combobox()
+
+        # Usage Location (ISO 2-letter codes required by Entra)
+        self.field_usagelocation = QComboBox()
+        self.field_usagelocation.setEditable(False)
 
         self.field_agegroup = self.make_autocomplete_combobox()
-        self.field_agegroup.addItems(["Minor", "NotAdult", "Adult"])
-
-        self.field_legalage = self.make_autocomplete_combobox()
         self.field_minorconsent = self.make_autocomplete_combobox()
         self.field_accesspackage = self.make_autocomplete_combobox()
 
@@ -681,16 +685,15 @@ class OffboardManager(QWidget):
 
         fields_layout.addWidget(QLabel("Employee Hire Date"), 15, 0)
         fields_layout.addWidget(self.field_hiredate, 15, 1)
-        fields_layout.addWidget(QLabel("Legal Age Group"), 15, 2)
-        fields_layout.addWidget(self.field_legalage, 15, 3)
 
         fields_layout.addWidget(QLabel("Employee Org Data"), 16, 0)
         fields_layout.addWidget(self.field_orgdata, 16, 1)
-        fields_layout.addWidget(QLabel("Consent for Minor"), 16, 2)
-        fields_layout.addWidget(self.field_minorconsent, 16, 3)
 
-        fields_layout.addWidget(QLabel("Access Package"), 17, 2)
-        fields_layout.addWidget(self.field_accesspackage, 17, 3)
+        fields_layout.addWidget(QLabel("Consent for Minor"), 15, 2)
+        fields_layout.addWidget(self.field_minorconsent, 15, 3)
+
+        fields_layout.addWidget(QLabel("Access Package"), 16, 2)
+        fields_layout.addWidget(self.field_accesspackage, 16, 3)
 
         cu_layout.addWidget(frame_fields, 3)
         self.stacked.addWidget(self.create_user_page)
@@ -923,6 +926,41 @@ class OffboardManager(QWidget):
                         if self.field_accountenabled.findText("True") == -1:
                             self.field_accountenabled.addItems(["True", "False"])
                         self.field_accountenabled.setCurrentText("True")
+
+                    # 🔹 Ensure Age Group combobox always has fixed values
+                    if hasattr(self, "field_agegroup"):
+                        if self.field_agegroup.findText("None") == -1:
+                            self.field_agegroup.addItems(["None", "Minor", "NotAdult", "Adult"])
+                        self.field_agegroup.setCurrentText("None")
+
+                    # 🔹 Ensure Consent for Minor combobox always has fixed values
+                    if hasattr(self, "field_minorconsent"):
+                        if self.field_minorconsent.findText("None") == -1:
+                            self.field_minorconsent.addItems(["None", "Granted", "Denied", "Not required"])
+                        self.field_minorconsent.setCurrentText("None")
+
+                    if hasattr(self, "field_usagelocation"):
+                        if self.field_usagelocation.count() == 0:
+                            self.field_usagelocation.addItems([
+                            "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
+                            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR",
+                            "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN", "CX",
+                            "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ", "DM",
+                            "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF",
+                            "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN",
+                            "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM",
+                            "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV",
+                            "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT",
+                            "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM",
+                            "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK",
+                            "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU",
+                            "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS", "SC",
+                            "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR", "SJ",
+                            "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN", "TR",
+                            "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
+                            "VI", "WF", "EH", "YE", "ZM", "ZW"
+                        ])
+                        self.field_usagelocation.setCurrentText("US")
 
             else:
                 QMessageBox.warning(self, "Navigation Error", f"Page '{name}' not found in stacked widget.")
@@ -1371,9 +1409,13 @@ class OffboardManager(QWidget):
             "Business phone": safe_val("field_businessphone"),
             "Mobile phone": safe_val("field_mobilephone"),
             "Fax number": safe_val("field_fax"),
-            "Other emails": safe_val("field_otheremails"),
+            "Other emails": safe_val("field_othermails"),
             "Proxy addresses": safe_val("field_proxy"),
             "IM addresses": safe_val("field_im"),
+
+            # 🔹 Added Parental Controls fields
+            "Age group": safe_val("field_agegroup"),
+            "Consent provided for minor": safe_val("field_minorconsent"),
         }
 
         # Create temporary CSV
@@ -1534,7 +1576,7 @@ class OffboardManager(QWidget):
             "Password", "JobTitle", "CompanyName", "Department", "City",
             "Country", "State", "OfficeLocation", "Manager", "Sponsors",
             "AccountEnabled", "UsageLocation", "PreferredDataLocation",
-            "AgeGroup", "LegalAgeGroup", "MinorConsent", "AccessPackage"
+            "AgeGroup", "MinorConsent", "AccessPackage"
         ]
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
@@ -1621,7 +1663,6 @@ class OffboardManager(QWidget):
             "UsageLocation": self.field_usagelocation,
             "PreferredDataLocation": self.field_preferreddatalocation,
             "AgeGroup": self.field_agegroup,
-            "LegalAgeGroupClassification": self.field_legalage,
             "ConsentProvidedForMinor": self.field_minorconsent,
             "AccessPackage": self.field_accesspackage,
             "EmployeeId": self.field_employeeid,
@@ -1694,7 +1735,6 @@ class OffboardManager(QWidget):
             "UsageLocation": self.field_usagelocation,
             "PreferredDataLocation": self.field_preferreddatalocation,
             "AgeGroup": self.field_agegroup,
-            "LegalAgeGroupClassification": self.field_legalage,
             "ConsentProvidedForMinor": self.field_minorconsent,
             "AccessPackage": self.field_accesspackage,
             "EmployeeId": self.field_employeeid,
@@ -1747,7 +1787,6 @@ class OffboardManager(QWidget):
             self.field_department, self.field_city, self.field_country,
             self.field_state, self.field_office, self.field_manager,
             self.field_sponsors, self.field_accountenabled, self.field_usagelocation,
-            self.field_preferreddatalocation, self.field_agegroup, self.field_legalage,
             self.field_minorconsent, self.field_accesspackage
         ]
 
@@ -1768,7 +1807,7 @@ class OffboardManager(QWidget):
             self.template_selector.setCurrentIndex(0)  # "-- Select Template --"
 
     def process_display_name(self):
-        """ Autofill First Name, Last Name, and UPN when Display Name is typed """
+        """ Autofill First Name, Last Name, UPN, and Email when Display Name is typed """
         display_name = self.field_displayname.text().strip()
 
         # If cleared → reset linked fields
@@ -1776,6 +1815,7 @@ class OffboardManager(QWidget):
             self.field_givenname.clear()
             self.field_surname.clear()
             self.field_upn.clear()
+            self.field_email.clear()
             return
 
         name_parts = display_name.split()
@@ -1849,7 +1889,6 @@ class OffboardManager(QWidget):
                 "UsageLocation": self.field_usagelocation,
                 "PreferredDataLocation": self.field_preferreddatalocation,
                 "AgeGroup": self.field_agegroup,
-                "LegalAgeGroupClassification": self.field_legalage,
                 "ConsentProvidedForMinor": self.field_minorconsent,
                 "AccessPackage": self.field_accesspackage,
                 "EmployeeId": self.field_employeeid,
@@ -1994,7 +2033,6 @@ class OffboardManager(QWidget):
             safe_set("field_usagelocation", "UsageLocation")
             safe_set("field_preferreddatalocation", "PreferredDataLocation")
             safe_set("field_agegroup", "AgeGroup")
-            safe_set("field_legalage", "LegalAgeGroupClassification")
             safe_set("field_minorconsent", "ConsentProvidedForMinor")
             safe_set("field_domain", "Domain name")  # <- your CSV header
             safe_set("field_manager", "ManagerDisplayName")
@@ -2004,13 +2042,15 @@ class OffboardManager(QWidget):
         except Exception as e:
             print(f"Failed to populate comboboxes: {e}")
 
-    def make_autocomplete_combobox(self):
+    def make_autocomplete_combobox(self, width=200):
         cb = QComboBox()
-        cb.setEditable(True)  # must be editable for completer to work
+        cb.setEditable(True)
         cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         completer = QCompleter()
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         cb.setCompleter(completer)
+
+        cb.setFixedWidth(width)  # 🔹 ensure uniform width
         return cb
 
     def generate_password(self, length: int = 12) -> str:

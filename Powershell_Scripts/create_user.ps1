@@ -78,9 +78,7 @@ foreach ($user in $users) {
             'Usage location'                 = "UsageLocation"
             'Preferred data location'        = "PreferredDataLocation"
             'Age group'                      = "AgeGroup"
-            'Legal age group classification' = "LegalAgeGroupClassification"
             'Consent provided for minor'     = "ConsentProvidedForMinor"
-            'Employee hire date'             = "EmployeeHireDate"
         }
 
         foreach ($key in $attributeMapping.Keys) {
@@ -110,6 +108,14 @@ foreach ($user in $users) {
         if ($user.'IM addresses') {
             $userDetails.IMAddresses = $user.'IM addresses' -split ';'
             Write-Host "   - IMAddresses : $($user.'IM addresses')"
+        }
+        if ($user.'Employee hire date') {
+            try {
+                $userDetails.EmployeeHireDate = [datetime]::ParseExact($user.'Employee hire date', 'yyyy-MM-dd', $null)
+                Write-Host "   - EmployeeHireDate : $($userDetails.EmployeeHireDate)"
+            } catch {
+                Write-Host "⚠️ Invalid EmployeeHireDate format: $($user.'Employee hire date')"
+            }
         }
 
         Write-Host "🚀 Creating user in Entra ID..."

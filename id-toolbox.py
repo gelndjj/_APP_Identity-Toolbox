@@ -781,10 +781,10 @@ class OffboardManager(QWidget):
         bulk_layout.addWidget(self.csv_drop_zone)
 
         # Button: Process CSV bulk creation
-        self.btn_process_bulk = QPushButton("Process Bulk Creation")
-        self.btn_process_bulk.setEnabled(False)  # Enabled only when CSV is dropped
-        self.btn_process_bulk.clicked.connect(self.process_bulk_creation)
-        bulk_layout.addWidget(self.btn_process_bulk)
+        self.bulk_create_btn = QPushButton("Process Bulk Creation")
+        self.bulk_create_btn.setEnabled(False)  # start disabled
+        self.bulk_create_btn.clicked.connect(self.process_bulk_creation)
+        bulk_layout.addWidget(self.bulk_create_btn)
 
         # --- Add sections to right panel with spacing ---
         right_panel.addWidget(frame_templates)
@@ -1570,32 +1570,65 @@ class OffboardManager(QWidget):
             pass
 
     def generate_csv_template(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save CSV Template", "", "CSV Files (*.csv)")
+        # Generate default filename with timestamp
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"UserTemplate_{ts}.csv"
+
+        # Let user choose where to save (prefill filename)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save CSV Template",
+            default_name,  # suggested name
+            "CSV Files (*.csv)"
+        )
         if not path:
             return
 
+        # Ensure .csv extension
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+
+        # Headers aligned with your PS script & CSV readers
         headers = [
-            "DisplayName", "GivenName", "Surname", "UPN", "Domain",
-            "Password", "JobTitle", "CompanyName", "Department", "City",
-            "Country", "State", "OfficeLocation", "Manager", "Sponsors",
-            "AccountEnabled", "UsageLocation", "PreferredDataLocation",
-            "AgeGroup", "MinorConsent", "AccessPackage"
+            "Display Name", "First name", "Last name", "User Principal Name",
+            "Password", "Job title", "Company name", "Department", "Employee ID", "City",
+            "Country or region", "State or province", "Office location", "Street address",
+            "Manager", "Sponsors", "Usage location", "ZIP or postal code", "Business phone"
+            "Mobile phone", "Other emails", "Age group", "Consent provided for minor", "Access Package"
         ]
+
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
+                writer = csv.writer(f, delimiter=";")
                 writer.writerow(headers)
             QMessageBox.information(self, "CSV Created", f"Template saved at:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save CSV:\n{e}")
 
     def process_bulk_creation(self):
+        """Triggered when 'Process Bulk Creation' button is clicked."""
         if not hasattr(self, "csv_path") or not self.csv_path:
             QMessageBox.warning(self, "No CSV", "Please drop a CSV file first.")
             return
 
-        QMessageBox.information(self, "Processing", f"Processing users from:\n{self.csv_path}")
-        # TODO: call your PowerShell script or bulk creation logic
+        # Confirm action
+        reply = QMessageBox.question(
+            self,
+            "Confirm Bulk Creation",
+            f"Proceed with bulk creation from:\n{self.csv_path}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # ✅ Call PowerShell script with CSV path
+        script_path = os.path.abspath("Powershell_Scripts/bulk_create_users.ps1")
+        params = {"CsvPath": self.csv_path}
+
+        self.run_powershell_with_output(script_path, params)
+
+        # Switch to console page so they see logs
+        self.show_named_page("console")
 
     def handle_csv_drop(self, file_path: str):
         """Handle CSV dropped in the drop zone."""
@@ -1603,6 +1636,14 @@ class OffboardManager(QWidget):
             self.load_dropped_csv(file_path)  # your existing CSV loader
             QMessageBox.information(self, "CSV Loaded", f"CSV loaded: {os.path.basename(file_path)}")
             self.show_named_page("dropped_csv")  # Switch directly to Dropped CSV page
+
+            # ✅ Enable bulk creation button
+            if hasattr(self, "bulk_create_btn"):
+                self.bulk_create_btn.setEnabled(True)
+
+            # Store the CSV path for processing
+            self.csv_path = file_path
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
 
@@ -2014,18 +2055,22 @@ class OffboardManager(QWidget):
                         .tolist()
                     )
 
-                    combo.blockSignals(True)
-                    combo.clear()
-                    combo.addItem("")  # allow empty
-                    combo.addItems([v for v in values if v])  # skip blanks
-                    combo.blockSignals(False)
+                    if values:  # only do something if we actually have data
+                        combo.blockSignals(True)
 
-                    # 🔹 attach fresh completer (case-insensitive, popup)
-                    combo.setEditable(True)
-                    comp = QCompleter(values, combo)
-                    comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-                    comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-                    combo.setCompleter(comp)
+                        # Only clear if it’s empty (don’t wipe user data when switching pages)
+                        if combo.count() == 0:
+                            combo.addItem("")  # allow empty
+                            combo.addItems([v for v in values if v])  # skip blanks
+
+                        combo.blockSignals(False)
+
+                        # 🔹 attach fresh completer (case-insensitive, popup)
+                        combo.setEditable(True)
+                        comp = QCompleter(values, combo)
+                        comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+                        comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                        combo.setCompleter(comp)
 
             # map CSV -> widgets (only if both exist)
             safe_set("field_jobtitle", "JobTitle")

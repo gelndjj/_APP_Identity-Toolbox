@@ -535,9 +535,11 @@ class OffboardManager(QWidget):
 
         self.field_proxy = QLineEdit()
         self.field_proxy.setPlaceholderText("Editable in Exchange.")
+        self.field_proxy.setReadOnly(True)
 
         self.field_email = QLineEdit()
         self.field_email.setPlaceholderText("Provided in Exchange")
+        self.field_email.setReadOnly(True)
 
         self.field_othermails = QLineEdit()
         self.field_othermails.setPlaceholderText("jdoe@gmail.com")
@@ -597,9 +599,8 @@ class OffboardManager(QWidget):
         self.field_accountenabled.addItems(["True", "False"])
         self.field_accountenabled.setCurrentText("True")  # default value
 
-        self.field_usagelocation = self.make_autocomplete_combobox()
-
         # Usage Location (ISO 2-letter codes required by Entra)
+        self.field_usagelocation = self.make_autocomplete_combobox()
         self.field_usagelocation = QComboBox()
         self.field_usagelocation.setEditable(False)
 
@@ -930,14 +931,14 @@ class OffboardManager(QWidget):
                     # 🔹 Ensure Age Group combobox always has fixed values
                     if hasattr(self, "field_agegroup"):
                         if self.field_agegroup.findText("None") == -1:
-                            self.field_agegroup.addItems(["None", "Minor", "NotAdult", "Adult"])
-                        self.field_agegroup.setCurrentText("None")
+                            self.field_agegroup.addItems(["Minor", "NotAdult", "Adult"])
+                        self.field_agegroup.setCurrentText("")
 
                     # 🔹 Ensure Consent for Minor combobox always has fixed values
                     if hasattr(self, "field_minorconsent"):
                         if self.field_minorconsent.findText("None") == -1:
-                            self.field_minorconsent.addItems(["None", "Granted", "Denied", "Not required"])
-                        self.field_minorconsent.setCurrentText("None")
+                            self.field_minorconsent.addItems(["Granted", "Denied", "notRequired"])
+                        self.field_minorconsent.setCurrentText("")
 
                     if hasattr(self, "field_usagelocation"):
                         if self.field_usagelocation.count() == 0:
@@ -960,7 +961,7 @@ class OffboardManager(QWidget):
                             "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
                             "VI", "WF", "EH", "YE", "ZM", "ZW"
                         ])
-                        self.field_usagelocation.setCurrentText("US")
+                        self.field_usagelocation.setCurrentText("")
 
             else:
                 QMessageBox.warning(self, "Navigation Error", f"Page '{name}' not found in stacked widget.")
@@ -1402,6 +1403,8 @@ class OffboardManager(QWidget):
             "Street address": safe_val("field_street"),
             "City": safe_val("field_city"),
             "State or province": safe_val("field_state"),
+            "Manager": safe_val("field_manager"),
+            "Sponsors": safe_val("field_sponsors"),
             "ZIP or postal code": safe_val("field_zip"),
             "Country or region": safe_val("field_country"),
             "Usage location": safe_val("field_usagelocation"),
@@ -1776,7 +1779,7 @@ class OffboardManager(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to update template:\n{e}")
 
     def clear_all_fields(self):
-        """Clear all QLineEdit, QComboBox, and QDateEdit fields, and reset template combobox."""
+        """Soft clear: reset QLineEdit text and QComboBox selection without losing items."""
         field_map = [
             self.field_displayname, self.field_givenname, self.field_surname,
             self.field_upn, self.field_employeeid, self.field_zip, self.field_street,
@@ -1791,20 +1794,22 @@ class OffboardManager(QWidget):
         ]
 
         for widget in field_map:
-            if hasattr(widget, "clear"):
+            if isinstance(widget, QLineEdit):
                 widget.clear()
-            if isinstance(widget, QComboBox):
-                widget.setCurrentIndex(-1)  # reset selection
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentIndex(-1)  # reset selection only
+            elif isinstance(widget, QDateEdit):
+                widget.setDate(QDate.currentDate())
 
-        # Special case: QDateEdit (Employee Hire Date)
+        # Special case: Employee Hire Date
         try:
-            self.field_hiredate.clear()
+            self.field_hiredate.setDate(QDate.currentDate())
         except Exception:
             pass
 
-        # Reset template combobox to default value
+        # Reset template selector
         if self.template_selector.count() > 0:
-            self.template_selector.setCurrentIndex(0)  # "-- Select Template --"
+            self.template_selector.setCurrentIndex(0)
 
     def process_display_name(self):
         """ Autofill First Name, Last Name, UPN, and Email when Display Name is typed """
@@ -2008,6 +2013,7 @@ class OffboardManager(QWidget):
                         .sort_values()
                         .tolist()
                     )
+
                     combo.blockSignals(True)
                     combo.clear()
                     combo.addItem("")  # allow empty
@@ -2031,12 +2037,11 @@ class OffboardManager(QWidget):
             safe_set("field_office", "OfficeLocation")
             safe_set("field_accountenabled", "AccountEnabled")
             safe_set("field_usagelocation", "UsageLocation")
-            safe_set("field_preferreddatalocation", "PreferredDataLocation")
             safe_set("field_agegroup", "AgeGroup")
             safe_set("field_minorconsent", "ConsentProvidedForMinor")
-            safe_set("field_domain", "Domain name")  # <- your CSV header
-            safe_set("field_manager", "ManagerDisplayName")
-            safe_set("field_sponsors", "SponsorDisplayName")
+            safe_set("field_domain", "Domain name")
+            safe_set("field_manager", "UserPrincipalName")
+            safe_set("field_sponsors", "UserPrincipalName")
             safe_set("field_accesspackage", "Access Package")
 
         except Exception as e:

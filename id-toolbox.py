@@ -566,7 +566,6 @@ class OffboardManager(QWidget):
 
         # --- Right column fields (QComboBox for selection) ---
         self.field_domain = QComboBox()
-        self.load_domains()
 
         self.field_password = QLineEdit()
         self.field_password.setPlaceholderText("Auto-generated or type manually")
@@ -1652,17 +1651,6 @@ class OffboardManager(QWidget):
         # TODO: Add bulk create logic here
         QMessageBox.information(self, "Processing", "Processing dropped CSV for bulk user creation...")
 
-    def load_domains(self):
-        try:
-            import json
-            path = os.path.join(os.path.dirname(__file__), "json", "domains.json")
-            with open(path, "r") as f:
-                data = json.load(f)
-                self.field_domain.clear()
-                self.field_domain.addItems(data.get("domains", []))
-        except Exception:
-            self.field_domain.addItems(["onmicrosoft.com"])  # fallback
-
     def load_templates(self):
         """Load template list into combobox with default entry."""
         profiles_dir = os.path.join(os.path.dirname(__file__), "Profiles")
@@ -2073,6 +2061,7 @@ class OffboardManager(QWidget):
                         combo.setCompleter(comp)
 
             # map CSV -> widgets (only if both exist)
+            safe_set("field_domain", "Domain name")
             safe_set("field_jobtitle", "JobTitle")
             safe_set("field_company", "CompanyName")
             safe_set("field_department", "Department")

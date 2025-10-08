@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QMessageBox, QComboBox, QLineEdit,
     QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
     QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
-    QFileDialog, QScrollArea, QGraphicsDropShadowEffect
+    QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor
@@ -78,7 +78,6 @@ class PowerShellWorkerWithParam(QThread):
         self.upn = upn
 
     def run(self):
-        import subprocess, os
         try:
             subprocess.run(
                 [
@@ -273,9 +272,11 @@ class OffboardManager(QWidget):
 
         self.btn_dashboard = QPushButton("Dashboard")
         self.btn_identity = QPushButton("Identity")
+        self.btn_devices = QPushButton("Devices")
+        self.btn_apps = QPushButton("Applications")
         self.btn_console = QPushButton("Console")
 
-        for b in [self.btn_dashboard, self.btn_identity, self.btn_console]:
+        for b in [self.btn_dashboard, self.btn_identity, self.btn_devices,self.btn_apps, self.btn_console]:
             b.setFixedHeight(40)
             b.setStyleSheet("""
                 QPushButton {
@@ -404,20 +405,38 @@ class OffboardManager(QWidget):
 
         # Devices Dashboard tab
         self.devices_dash_tab = QWidget()
-        self.devices_dash_layout = QVBoxLayout(self.devices_dash_tab)
+        self.devices_dash_scroll = QScrollArea()
+        self.devices_dash_scroll.setWidgetResizable(True)
+
+        # Inner container for scroll
+        self.devices_dash_container = QWidget()
+        self.devices_dash_layout = QVBoxLayout(self.devices_dash_container)
+
+        # Selector at the top
         self.devices_dash_selector = QComboBox()
         try:
             self.devices_dash_selector.currentIndexChanged.disconnect()
         except TypeError:
             pass
         self.devices_dash_selector.currentIndexChanged.connect(
-            lambda: self.update_dashboard_from_csv(
-                self.devices_dash_selector, self.devices_dash_cards, "devices"
+            lambda: self.update_devices_dashboard_from_csv(
+                self.devices_dash_selector, self.devices_dash_cards
             )
         )
         self.devices_dash_layout.addWidget(self.devices_dash_selector)
+
+        # Cards grid inside scroll
         self.devices_dash_cards = QGridLayout()
         self.devices_dash_layout.addLayout(self.devices_dash_cards)
+
+        # Put the container into the scroll
+        self.devices_dash_scroll.setWidget(self.devices_dash_container)
+
+        # Add scroll area to the tab
+        outer_layout = QVBoxLayout(self.devices_dash_tab)
+        outer_layout.addWidget(self.devices_dash_scroll)
+
+        # Finally add tab
         self.dashboard_tabs.addTab(self.devices_dash_tab, "Devices Dashboard")
 
         # Apps Dashboard tab
@@ -429,13 +448,22 @@ class OffboardManager(QWidget):
         except TypeError:
             pass
         self.apps_dash_selector.currentIndexChanged.connect(
-            lambda: self.update_dashboard_from_csv(
-                self.apps_dash_selector, self.apps_dash_cards, "apps"
+            lambda: self.update_apps_dashboard_from_csv(
+                self.apps_dash_selector, self.apps_dash_cards
             )
         )
         self.apps_dash_layout.addWidget(self.apps_dash_selector)
+
+        # Wrap the grid in a scrollable area
         self.apps_dash_cards = QGridLayout()
-        self.apps_dash_layout.addLayout(self.apps_dash_cards)
+        apps_dash_container = QWidget()
+        apps_dash_container.setLayout(self.apps_dash_cards)
+
+        apps_scroll = QScrollArea()
+        apps_scroll.setWidgetResizable(True)
+        apps_scroll.setWidget(apps_dash_container)
+
+        self.apps_dash_layout.addWidget(apps_scroll)
         self.dashboard_tabs.addTab(self.apps_dash_tab, "Apps Dashboard")
 
         # Add Dashboard to stacked widget
@@ -467,8 +495,65 @@ class OffboardManager(QWidget):
 
         self.stacked.addWidget(self.identity_page)
         self.page_map["identity"] = self.identity_page
-
         self.try_populate_comboboxes()
+
+        # --- Devices page (table view) ---
+        self.devices_page = QWidget()
+        dev_layout = QVBoxLayout(self.devices_page)
+
+        # CSV selector for devices
+        self.devices_csv_selector = QComboBox()
+        self.devices_csv_selector.currentIndexChanged.connect(self.load_selected_devices_csv)
+        dev_layout.addWidget(self.devices_csv_selector)
+
+        # Search field (UserDisplayName only)
+        self.devices_search = QLineEdit()
+        self.devices_search.setPlaceholderText("Search by UserDisplayName (starts with)...")
+        self.devices_search.textChanged.connect(self.filter_devices_table)
+        dev_layout.addWidget(self.devices_search)
+
+        # Devices table
+        self.devices_table = QTableWidget()
+        self.devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.devices_table.horizontalHeader().setStretchLastSection(True)
+        self.devices_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.devices_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.devices_table.setSortingEnabled(True)
+        dev_layout.addWidget(self.devices_table)
+
+        # Add to stacked widget
+        self.stacked.addWidget(self.devices_page)
+        self.page_map["devices"] = self.devices_page
+        self.try_populate_devices_csv()
+
+        # --- Apps page (table view) ---
+        self.apps_page = QWidget()
+        apps_layout = QVBoxLayout(self.apps_page)
+
+        # CSV selector for apps
+        self.apps_csv_selector = QComboBox()
+        self.apps_csv_selector.currentIndexChanged.connect(self.load_selected_apps_csv)
+        apps_layout.addWidget(self.apps_csv_selector)
+
+        # Search field (App or User)
+        self.apps_search = QLineEdit()
+        self.apps_search.setPlaceholderText("Search by App or User (contains)...")
+        self.apps_search.textChanged.connect(self.filter_apps_table)
+        apps_layout.addWidget(self.apps_search)
+
+        # Apps table
+        self.apps_table = QTableWidget()
+        self.apps_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.apps_table.horizontalHeader().setStretchLastSection(True)
+        self.apps_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.apps_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.apps_table.setSortingEnabled(True)
+        apps_layout.addWidget(self.apps_table)
+
+        # Add to stacked widget
+        self.stacked.addWidget(self.apps_page)
+        self.page_map["apps"] = self.apps_page
+        self.try_populate_apps_csv()
 
         # --- Console page ---
         self.console_page = QWidget()
@@ -600,7 +685,6 @@ class OffboardManager(QWidget):
 
         # Usage Location (ISO 2-letter codes required by Entra)
         self.field_usagelocation = self.make_autocomplete_combobox()
-        self.field_usagelocation = QComboBox()
         self.field_usagelocation.setEditable(False)
 
         self.field_agegroup = self.make_autocomplete_combobox()
@@ -694,9 +778,6 @@ class OffboardManager(QWidget):
 
         fields_layout.addWidget(QLabel("Access Package"), 16, 2)
         fields_layout.addWidget(self.field_accesspackage, 16, 3)
-
-        cu_layout.addWidget(frame_fields, 3)
-        self.stacked.addWidget(self.create_user_page)
 
         # === Right Frame: Templates, Actions, Random User Generator ===
         right_panel = QVBoxLayout()
@@ -802,8 +883,6 @@ class OffboardManager(QWidget):
         cu_layout.addWidget(frame_fields, 3)  # Left side (user info)
         cu_layout.addWidget(frame_right, 1)  # Right side (controls)
 
-        self.stacked.addWidget(self.create_user_page)  # Page 3
-
         # Log selector
         self.log_selector = QComboBox()
         self.log_selector.currentIndexChanged.connect(self.load_selected_log)
@@ -821,8 +900,6 @@ class OffboardManager(QWidget):
         self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
         console_layout.addWidget(self.console_output)
 
-        self.stacked.addWidget(self.console_page)  # Page 4
-
         # Populate logs at startup
         self.refresh_log_list()
 
@@ -834,6 +911,8 @@ class OffboardManager(QWidget):
         # Button actions → now they match the page order
         self.btn_dashboard.clicked.connect(lambda: self.show_named_page("dashboard"))
         self.btn_identity.clicked.connect(lambda: self.show_named_page("identity"))
+        self.btn_devices.clicked.connect(lambda: self.show_named_page("devices"))
+        self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
         self.btn_create_user.clicked.connect(lambda: self.show_named_page("create_user"))
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
@@ -1199,6 +1278,405 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
 
+    def load_selected_devices_csv(self):
+        path = self.devices_csv_selector.currentText()
+        if not path.endswith(".csv"):
+            return
+        try:
+            # Auto-detect delimiter
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+
+            # store dataframe for search/filter
+            self.current_devices_df = df.copy()
+
+            # show full table first
+            self.display_devices_dataframe(self.current_devices_df)
+
+            # if search text exists, apply it
+            if self.devices_search.text().strip():
+                self.filter_devices_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load Devices CSV:\n{e}")
+
+    def load_selected_apps_csv(self):
+        """Load the selected Apps CSV and display it in the table."""
+        path = self.apps_csv_selector.currentText()
+        if not path.endswith(".csv"):
+            return
+
+        try:
+            # Auto-detect delimiter
+            import csv
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+
+            # Store dataframe for filtering/search
+            self.current_apps_df = df.copy()
+
+            # Show full table
+            self.display_apps_dataframe(self.current_apps_df)
+
+            # Apply existing search if any
+            if self.apps_search.text().strip():
+                self.filter_apps_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
+
+    def display_apps_dataframe(self, df: pd.DataFrame):
+        """Render a pandas DataFrame into the apps_table widget."""
+        self.apps_table.clear()
+
+        if df is None or df.empty:
+            self.apps_table.setRowCount(0)
+            self.apps_table.setColumnCount(0)
+            return
+
+        # Set up headers
+        self.apps_table.setRowCount(len(df))
+        self.apps_table.setColumnCount(len(df.columns))
+        self.apps_table.setHorizontalHeaderLabels(df.columns.tolist())
+
+        # Fill data
+        for r, row in enumerate(df.itertuples(index=False)):
+            for c, value in enumerate(row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # make read-only
+                self.apps_table.setItem(r, c, item)
+
+        self.apps_table.resizeColumnsToContents()
+
+    def update_devices_dashboard_from_csv(self, combo, layout):
+        # 1) Clear existing widgets
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item:
+                widget = item.widget()
+                if widget is not None:
+                    layout.removeWidget(widget)
+                    widget.deleteLater()
+
+        # 2) Load CSV
+        path = combo.currentText()
+        if not path.endswith(".csv"):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+            return
+
+        # -------- Helpers --------
+        def s(name: str) -> pd.Series:
+            if name in df.columns:
+                return df[name].astype(str).fillna("")
+            return pd.Series([""] * total, dtype=str)
+
+        def b(name: str) -> pd.Series:
+            return s(name).str.lower().eq("true")
+
+        # -------- Metrics --------
+        compliant = (s("ComplianceState").str.lower() == "compliant").sum()
+        non_compliant = total - compliant
+        encrypted = b("IsEncrypted").sum()
+        unencrypted = total - encrypted
+        autopilot = b("AutopilotEnrolled").sum()
+
+        windows = s("OperatingSystem").str.contains("Windows", case=False).sum()
+        macos = s("OperatingSystem").str.contains("Mac", case=False).sum()
+        ios = s("OperatingSystem").str.contains("iOS", case=False).sum()
+        android = s("OperatingSystem").str.contains("Android", case=False).sum()
+
+        last_sync = pd.to_datetime(s("LastSyncDateTime"), errors="coerce", utc=True)
+        stale = int(((pd.Timestamp.utcnow() - last_sync) > pd.Timedelta(days=30)).fillna(False).sum())
+
+        # -------- Card factory (with on_click) --------
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #1a1a1a
+                    );
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #333333
+                    );
+                }}
+                QLabel {{
+                    color: white;
+                    background: transparent;
+                }}
+            """)
+
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            vbox = QVBoxLayout(card)
+
+            # Title row
+            title_row = QHBoxLayout()
+            if icon:
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                title_row.addWidget(icon_lbl)
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+            title_row.addWidget(title_lbl)
+            title_row.addStretch()
+            vbox.addLayout(title_row)
+
+            # Value
+            value_lbl = QLabel(str(value))
+            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+            vbox.addWidget(value_lbl)
+
+            if subtitle:
+                sub_lbl = QLabel(subtitle)
+                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                vbox.addWidget(sub_lbl)
+
+            # 🔹 Make clickable
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda event: on_click()
+
+            return card
+
+        # -------- Add device cards --------
+        cards = [
+            ("Devices Total", total, "#34495e", "💻", "All devices",
+             lambda: self.show_filtered_devices("Id", "")),  # show all
+            ("Compliant", compliant, "#27ae60", "✅", "ComplianceState = compliant",
+             lambda: self.show_filtered_devices("ComplianceState", "compliant")),
+            ("Non-Compliant", non_compliant, "#c0392b", "❌", "Other states",
+             lambda: self.show_filtered_devices("ComplianceState", "noncompliant")),
+            ("Encrypted", encrypted, "#16a085", "🔒", "BitLocker/FileVault on",
+             lambda: self.show_filtered_devices("IsEncrypted", "True")),
+            ("Unencrypted", unencrypted, "#d35400", "🔓", "No encryption",
+             lambda: self.show_filtered_devices("IsEncrypted", "False")),
+            ("Autopilot Enrolled", autopilot, "#2980b9", "🚀", "Devices in Autopilot",
+             lambda: self.show_filtered_devices("AutopilotEnrolled", "True")),
+            ("Windows", windows, "#3498db", "🪟", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Windows")),
+            ("macOS", macos, "#9b59b6", "🍎", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Mac")),
+            ("iOS", ios, "#e67e22", "📱", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "iOS")),
+            ("Android", android, "#27ae60", "🤖", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Android")),
+            ("Stale >30d", stale, "#7f8c8d", "⏳", "Last sync older than 30 days",
+             lambda: self.show_filtered_devices("LastSyncDateTime", "stale")),
+        ]
+
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub, on_click in cards:
+            card = make_card(title, val, col_hex, icon, sub, on_click=on_click)
+            layout.addWidget(card, r, c)
+            c += 1
+            if c == cols:
+                r += 1
+                c = 0
+
+    def update_apps_dashboard_from_csv(self, combo, layout):
+        # clear
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                layout.removeWidget(item.widget())
+                item.widget().deleteLater()
+
+        path = combo.currentText()
+        if not path.endswith(".csv"):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        # auto-detect delimiter (same as loaders)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                delimiter = csv.Sniffer().sniff(sample).delimiter
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data in this CSV"), 0, 0)
+            return
+
+        def s(col):
+            return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+        # metrics (based on your screenshot headers)
+        installs = total
+        unique_apps = s("AppDisplayName").replace("", pd.NA).dropna().nunique()
+        unique_devices = s("DeviceName").replace("", pd.NA).dropna().nunique()
+        unique_users = s("UserPrincipalName").replace("", pd.NA).dropna().nunique()
+
+        platform_series = s("Platform").str.lower()
+        win_count = (platform_series == "windows").sum()
+        mac_count = (platform_series == "macos").sum()
+        ios_count = (platform_series == "ios").sum()
+        android_count = (platform_series == "android").sum()
+        other_platform = total - (win_count + mac_count + ios_count + android_count)
+
+        publisher_empty = s("Publisher").str.strip().eq("").sum()
+
+        # ---- card factory (clickable) ----
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
+                    border-radius: 12px; padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333);
+                }}
+                QLabel {{ color: white; background: transparent; }}
+            """)
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25);
+            shadow.setOffset(0, 4);
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            v = QVBoxLayout(card)
+            row = QHBoxLayout()
+            if icon:
+                il = QLabel(icon);
+                il.setStyleSheet("font-size:20px; margin-right:8px;")
+                row.addWidget(il)
+            tl = QLabel(title);
+            tl.setStyleSheet("font-size:14px; font-weight:bold;")
+            row.addWidget(tl);
+            row.addStretch();
+            v.addLayout(row)
+
+            vl = QLabel(str(value))
+            vl.setStyleSheet("""
+                font-size: 28px;
+                font-weight: bold;
+                background: transparent;
+            """)
+            v.addWidget(vl)
+
+            if subtitle:
+                sl = QLabel(subtitle);
+                sl.setStyleSheet("font-size:12px; color:#bdc3c7;")
+                v.addWidget(sl)
+
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda e: on_click()
+            return card
+
+        cards = [
+            ("Installations", installs, "#34495e", "📦", "All rows", lambda: self.show_filtered_apps("ALL")),
+            ("Unique Apps", unique_apps, "#2c3e50", "🧩", "Distinct AppDisplayName",
+             lambda: self.show_filtered_apps("DEDUP_APPS")),
+            ("Unique Devices", unique_devices, "#2980b9", "💻", "Distinct DeviceName",
+             lambda: self.show_filtered_apps("DEDUP_DEVICES")),
+            ("Unique Users", unique_users, "#16a085", "👤", "Distinct UserPrincipalName",
+             lambda: self.show_filtered_apps("DEDUP_USERS")),
+
+            ("Windows", win_count, "#3498db", "🪟", "", lambda: self.show_filtered_apps("PLATFORM", "windows")),
+            ("macOS", mac_count, "#9b59b6", "🍎", "", lambda: self.show_filtered_apps("PLATFORM", "macos")),
+            ("iOS", ios_count, "#e67e22", "📱", "", lambda: self.show_filtered_apps("PLATFORM", "ios")),
+            ("Android", android_count, "#27ae60", "🤖", "", lambda: self.show_filtered_apps("PLATFORM", "android")),
+            ("Other", other_platform, "#7f8c8d", "❓", "Other platforms",
+             lambda: self.show_filtered_apps("PLATFORM", "")),
+
+            ("Publisher missing", publisher_empty, "#d35400", "⚠️", "Publisher empty",
+             lambda: self.show_filtered_apps("PUBLISHER_EMPTY")),
+        ]
+
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub, cb in cards:
+            layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
+            c += 1
+            if c == cols:
+                r += 1;
+                c = 0
+
+        # ---- small "Top ..." tables: Top Apps / Top Publishers / Top Platforms ----
+        def make_top_table(title, series: pd.Series, n=10):
+            vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+            frame = QFrame()
+            frame.setStyleSheet("""
+                QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                QLabel { color: white; }
+                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+            """)
+            v = QVBoxLayout(frame)
+
+            t = QLabel(title)
+            t.setStyleSheet("font-size:14px; font-weight:bold;")
+            v.addWidget(t)
+
+            tbl = QTableWidget()
+            tbl.setRowCount(len(vc))
+            tbl.setColumnCount(2)
+            tbl.setHorizontalHeaderLabels(["Value", "Count"])
+            tbl.verticalHeader().setVisible(False)
+
+            # ✅ PyQt6 enums
+            tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+            hdr = tbl.horizontalHeader()
+            hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+            for i, (k, cnt) in enumerate(vc.items()):
+                tbl.setItem(i, 0, QTableWidgetItem(str(k)))
+                tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
+
+            tbl.resizeColumnsToContents()
+            tbl.setFixedHeight(250)
+            v.addWidget(tbl)
+            return frame
+
+        layout.addWidget(make_top_table("Top Apps", s("AppDisplayName")), r, 0)
+        layout.addWidget(make_top_table("Top Publishers", s("Publisher")), r, 1)
+        layout.addWidget(make_top_table("Top Platforms", s("Platform")), r, 2)
+
     def display_dataframe(self, df: pd.DataFrame):
         self.identity_table.setRowCount(0)
         self.identity_table.setColumnCount(len(df.columns))
@@ -1207,6 +1685,21 @@ class OffboardManager(QWidget):
             self.identity_table.insertRow(r_idx)
             for c_idx, val in enumerate(row):
                 self.identity_table.setItem(r_idx, c_idx, QTableWidgetItem(str(val)))
+
+    def display_devices_dataframe(self, df):
+        """Display the given dataframe in the devices table."""
+        self.devices_table.setRowCount(0)
+        self.devices_table.setColumnCount(len(df.columns))
+        self.devices_table.setHorizontalHeaderLabels(df.columns.tolist())
+
+        for i, row in df.iterrows():
+            self.devices_table.insertRow(self.devices_table.rowCount())
+            for j, val in enumerate(row):
+                item = QTableWidgetItem(str(val))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.devices_table.setItem(self.devices_table.rowCount() - 1, j, item)
+
+        self.devices_table.resizeColumnsToContents()
 
     def filter_table(self):
         if not hasattr(self, "current_df") or self.current_df is None:
@@ -1309,6 +1802,42 @@ class OffboardManager(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Filtering failed for {filter_type}:\n{e}")
+
+    def filter_devices_table(self):
+        """Filter devices table by UserDisplayName prefix search."""
+        if not hasattr(self, "current_devices_df"):
+            return
+
+        text = self.devices_search.text().strip().lower()
+        if not text:
+            filtered = self.current_devices_df
+        else:
+            if "UserDisplayName" not in self.current_devices_df.columns:
+                QMessageBox.warning(self, "Warning", "UserDisplayName column not found in Devices CSV")
+                return
+            filtered = self.current_devices_df[
+                self.current_devices_df["UserDisplayName"].str.lower().str.startswith(text)
+            ]
+
+        self.display_devices_dataframe(filtered)
+
+    def filter_apps_table(self):
+        """Filter apps table by AppDisplayName or UserDisplayName (contains search)."""
+        if not hasattr(self, "current_apps_df"):
+            return
+
+        query = self.apps_search.text().strip().lower()
+        if not query:
+            filtered = self.current_apps_df
+        else:
+            df = self.current_apps_df
+            mask = (
+                    df.get("AppDisplayName", pd.Series([""] * len(df))).str.lower().str.contains(query) |
+                    df.get("UserDisplayName", pd.Series([""] * len(df))).str.lower().str.contains(query)
+            )
+            filtered = df[mask]
+
+        self.display_apps_dataframe(filtered)
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()
@@ -1664,8 +2193,6 @@ class OffboardManager(QWidget):
                 self.template_selector.addItem(file.replace(".json", ""))
 
     def save_template(self):
-        from PyQt6.QtWidgets import QInputDialog
-
         # Ask template name
         name, ok = QInputDialog.getText(self, "Save Template", "Enter template name:")
         if not ok or not name.strip():
@@ -1951,7 +2478,6 @@ class OffboardManager(QWidget):
                 elif hasattr(widget, "setText"):  # QLineEdit
                     widget.setText(value)
                 elif key == "EmployeeHireDate" and hasattr(widget, "setDate"):  # QDateEdit
-                    from PyQt6.QtCore import QDate
                     try:
                         date = QDate.fromString(value, "yyyy-MM-dd")
                         if date.isValid():
@@ -2000,6 +2526,34 @@ class OffboardManager(QWidget):
         if hasattr(self, "identity_dash_selector"):
             self.identity_dash_selector.clear()
             self.identity_dash_selector.addItem(path)
+
+    def try_populate_devices_csv(self):
+        """Populate the devices_csv_selector with files from Database_Devices"""
+        folder = os.path.join(os.path.dirname(__file__), "Database_Devices")
+        self.devices_csv_selector.clear()
+        if os.path.exists(folder):
+            files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+            for f in sorted(files, reverse=True):
+                self.devices_csv_selector.addItem(os.path.join(folder, f))
+
+        # Auto-load the most recent CSV if available
+        if self.devices_csv_selector.count() > 0:
+            self.devices_csv_selector.setCurrentIndex(0)
+            self.load_selected_devices_csv()
+
+    def try_populate_apps_csv(self):
+        """Populate the apps_csv_selector with files from Database_Apps"""
+        folder = os.path.join(os.path.dirname(__file__), "Database_Apps")
+        self.apps_csv_selector.clear()
+        if os.path.exists(folder):
+            files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+            for f in sorted(files, reverse=True):
+                self.apps_csv_selector.addItem(os.path.join(folder, f))
+
+        # Auto-load the most recent CSV if available
+        if self.apps_csv_selector.count() > 0:
+            self.apps_csv_selector.setCurrentIndex(0)
+            self.load_selected_apps_csv()
 
     def set_default_path(self):
         """Let user select a default CSV directory (e.g. SharePoint sync folder)."""
@@ -2107,7 +2661,6 @@ class OffboardManager(QWidget):
     def load_dropped_csv(self, file_path: str):
         """Load a dropped CSV into the Dropped CSV table."""
         try:
-            import csv
             with open(file_path, newline='', encoding="utf-8") as f:
                 # Auto-detect delimiter
                 sample = f.read(1024)
@@ -2384,6 +2937,60 @@ class OffboardManager(QWidget):
                 self.load_dataframe_into_table(filtered)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Filtering failed:\n{e}")
+
+    def show_filtered_devices(self, column_name, filter_value):
+        """Switch to Devices tab and show only devices matching filter."""
+        self.show_named_page("devices")
+
+        if hasattr(self, "current_devices_df"):
+            try:
+                if filter_value == "stale":
+                    # Special case: LastSyncDateTime older than 30 days
+                    lsi = pd.to_datetime(self.current_devices_df["LastSyncDateTime"], errors="coerce", utc=True)
+                    mask = (pd.Timestamp.utcnow() - lsi) > pd.Timedelta(days=30)
+                    filtered = self.current_devices_df[mask.fillna(False)]
+                else:
+                    # Case-insensitive contains instead of exact match
+                    filtered = self.current_devices_df[
+                        self.current_devices_df[column_name].str.lower().str.contains(filter_value.lower(), na=False)
+                    ]
+                self.display_devices_dataframe(filtered)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Device filtering failed:\n{e}")
+
+    def show_filtered_apps(self, mode, value=None):
+        """Switch to Applications tab and show filtered apps based on dashboard click."""
+        self.show_named_page("apps")
+
+        if not hasattr(self, "current_apps_df") or self.current_apps_df is None:
+            return
+
+        df = self.current_apps_df.copy()
+
+        try:
+            if mode == "ALL":
+                filtered = df
+            elif mode == "DEDUP_APPS":
+                filtered = df.drop_duplicates(subset=["AppDisplayName"])
+            elif mode == "DEDUP_DEVICES":
+                filtered = df.drop_duplicates(subset=["DeviceName"])
+            elif mode == "DEDUP_USERS":
+                filtered = df.drop_duplicates(subset=["UserPrincipalName"])
+            elif mode == "PLATFORM":
+                if value:
+                    filtered = df[df["Platform"].str.lower() == value.lower()]
+                else:
+                    known = ["windows", "macos", "ios", "android"]
+                    filtered = df[~df["Platform"].str.lower().isin(known)]
+            elif mode == "PUBLISHER_EMPTY":
+                filtered = df[df["Publisher"].str.strip() == ""]
+            else:
+                return
+
+            self.display_apps_dataframe(filtered)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"App filtering failed:\n{e}")
 
     def reload_app(self):
         """Restart the entire application."""

@@ -115,7 +115,7 @@ $CSVproperties = @(
     # Registered Devices
     @{Name="Devices";Expression={[string]::join(" ; ", ($_.Devices))}}
     )
-    
+
 #Requires -Version 7
 Connect-MgGraph
 
@@ -155,12 +155,12 @@ for ($i = 0; $i -lt $users.Length; $i += $batchSize) {
         @{
             'Id'     = "$($PSItem.Id):manager"
             'Method' = 'GET'
-            'Url'    = "users/{0}/manager" -f $PSItem.Id 
+            'Url'    = "users/{0}/manager" -f $PSItem.Id
         },
         @{
             'Id'     = "$($PSItem.Id):sponsor"
             'Method' = 'GET'
-            'Url'    = "users/{0}/sponsors" -f $PSItem.Id 
+            'Url'    = "users/{0}/sponsors" -f $PSItem.Id
         },
         @{
             'Id'     = "$($PSItem.Id):registeredDevices"
@@ -170,17 +170,17 @@ for ($i = 0; $i -lt $users.Length; $i += $batchSize) {
         @{
             'Id'     = "$($PSItem.Id):license"
             'Method' = 'GET'
-            'Url'    = "users/{0}/licenseDetails" -f $PSItem.Id 
+            'Url'    = "users/{0}/licenseDetails" -f $PSItem.Id
         },
         @{
             'Id'     = "$($PSItem.Id):authenticationMethods"
             'Method' = 'GET'
-            'Url'    = "users/{0}/authentication/methods" -f $PSItem.Id 
+            'Url'    = "users/{0}/authentication/methods" -f $PSItem.Id
         },
         @{
             'Id'     = "$($PSItem.Id):authenticationPreference"
             'Method' = 'GET'
-            'Url'    = "users/{0}/authentication/SignInPreferences" -f $PSItem.Id 
+            'Url'    = "users/{0}/authentication/SignInPreferences" -f $PSItem.Id
         }
     }
 
@@ -194,7 +194,7 @@ for ($i = 0; $i -lt $users.Length; $i += $batchSize) {
     })
 }
 
-Write-Output "Sending requests" 
+Write-Output "Sending requests"
 
 $batches | ForEach-Object -Parallel {
     $responses = $using:usersDetails
@@ -202,13 +202,13 @@ $batches | ForEach-Object -Parallel {
     $request.responses | ForEach-Object {$responses.Add([pscustomobject]@{
             'UserId' = $PSItem.Id.Split(":")[0]
             'requesttype' = $PSItem.Id.Split(":")[1]
-            'body' = $PSItem.body 
+            'body' = $PSItem.body
         })}
 }
 
 $usersDetails = $usersDetails | Group-Object -Property UserId -AsHashTable
 
-Write-Output "Processing requests" 
+Write-Output "Processing requests"
 
 foreach ($user in $users) {
     $DaySinceLastCo = ($user.SignInActivity.LastSuccessfulSignInDateTime - (Get-Date)).Days

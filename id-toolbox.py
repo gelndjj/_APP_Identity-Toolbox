@@ -1075,7 +1075,6 @@ class OffboardManager(QWidget):
         self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
         self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
         self.worker.finished.connect(self.refresh_log_list)
-        self.worker.finished.connect(self.refresh_csv_lists)
 
         # Update tenant info automatically after script finishes
         self.worker.finished.connect(lambda _: self.update_tenant_info())
@@ -1233,15 +1232,6 @@ class OffboardManager(QWidget):
         # Apps CSVs
         apps_dir = os.path.join(base_dir, "Database_Apps")
         apps_csvs = glob.glob(os.path.join(apps_dir, "*.csv"))
-
-        # Populate Identity selectors
-        for cb in [self.csv_selector, self.identity_dash_selector]:
-            cb.clear()
-            if not identity_csvs:
-                cb.addItem("No CSV found")
-            else:
-                for f in identity_csvs:
-                    cb.addItem(f)
 
         # Populate Devices selector
         self.devices_dash_selector.clear()

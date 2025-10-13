@@ -24,25 +24,28 @@ if (-not (Test-Path -LiteralPath $CsvPath)) {
 # Helper: strong password when blank (optional)
 # -------------------------------
 function New-StrongPassword([int]$Length = 16) {
-    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
-    $lower = 'abcdefghijkmnpqrstuvwxyz'
-    $digit = '23456789'
-    $sym   = '@#$%&*+-_!?'
-    $all   = ($upper + $lower + $digit + $sym).ToCharArray()
+    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'.ToCharArray()
+    $lower = 'abcdefghijkmnpqrstuvwxyz'.ToCharArray()
+    $digit = '23456789'.ToCharArray()
+    $sym   = '@#$%&*+-_!?'.ToCharArray()
+    $all   = $upper + $lower + $digit + $sym
 
-    $pick = {
-        param($chars) -join (1..1 | ForEach-Object { $chars | Get-Random })
+    # Guarantee at least one of each type
+    $base = @(
+        ($upper | Get-Random -Count 1)
+        ($lower | Get-Random -Count 1)
+        ($digit | Get-Random -Count 1)
+        ($sym   | Get-Random -Count 1)
+    )
+
+    # Fill remaining characters randomly from all allowed
+    $remaining = $Length - $base.Count
+    if ($remaining -gt 0) {
+        $base += (1..$remaining | ForEach-Object { $all | Get-Random -Count 1 })
     }
 
-    $base = (@(
-        $upper | Get-Random
-        $lower | Get-Random
-        $digit | Get-Random
-        $sym   | Get-Random
-    ) + (1..($Length-4) | ForEach-Object { $all | Get-Random })) -join ''
-
-    # shuffle
-    -join ($base.ToCharArray() | Sort-Object { Get-Random })
+    # Shuffle and return as a string
+    -join ($base | Sort-Object { Get-Random })
 }
 
 # -------------------------------
@@ -117,13 +120,21 @@ while (-not $parser.EndOfData) {
         $UsageLocation = $UsageLocation.Substring(0, [Math]::Min(2, $UsageLocation.Length)).ToUpperInvariant()
     }
 
-    # Password: auto-generate if blank
-    if ([string]::IsNullOrWhiteSpace($Password)) {
+    # Password: auto-generate if blank or too weak (less than 8 chars or missing complexity)
+    $generated = $false
+
+    if ([string]::IsNullOrWhiteSpace($Password) -or
+        $Password.Length -lt 8 -or
+        -not ($Password -match '[A-Z]' -and $Password -match '[a-z]' -and $Password -match '\d' -and $Password -match '[@#$%&*+\-_!?]')) {
+
         $Password = New-StrongPassword 16
-        Write-Host "🔐 Password was blank → generated strong password (length $($Password.Length))."
+        $generated = $true
+        Write-Host "🔐 Generated new strong password for user: $UPN" -ForegroundColor Cyan
     } else {
-        Write-Host "🔎 Raw password length: $($Password.Length)"
+        Write-Host "🔎 Using password from CSV for user: $UPN"
     }
+
+    Write-Host "   → Final password used: $Password" -ForegroundColor DarkGray
 
     $passwordProfile = @{
         Password = $Password

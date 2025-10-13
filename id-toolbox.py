@@ -149,26 +149,54 @@ class StreamingPowerShellWorker(QThread):
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
         super().__init__("Drop CSV file here", parent)
-        self.on_csv_dropped = on_csv_dropped  # store callback
+        self.on_csv_dropped = on_csv_dropped
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setAcceptDrops(True)
+        self.setWordWrap(True)
+        self.setFixedHeight(100)
+        self.setMaximumWidth(200)  # Prevent window from stretching
+        self.update_default_style()
+
+    def update_default_style(self):
         self.setStyleSheet("""
             QLabel {
                 border: 2px dashed #888;
                 border-radius: 8px;
-                padding: 40px;
+                padding: 20px;
                 color: #aaa;
+                font-style: italic;
+                text-align: center;
             }
             QLabel:hover {
                 border-color: #00aaff;
                 color: #00aaff;
             }
         """)
-        self.setAcceptDrops(True)
+        self.setText("Drop CSV file here")
+
+    def update_dropped_style(self, file_name):
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #00BFFF;
+                border-radius: 8px;
+                padding: 20px;
+                color: #00BFFF;
+                font-weight: bold;
+                text-align: center;
+            }
+        """)
+        # Truncate to fit, but allow wrapping in 2 lines
+        max_len = 40
+        display_name = (file_name[:max_len] + "…") if len(file_name) > max_len else file_name
+        display_name = display_name.replace("_", "_<wbr>")  # allow breaks at underscores
+
+        # Use HTML for multi-line display
+        self.setText(f"<div style='text-align:center;'>📄<br>{display_name}</div>")
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             file = event.mimeData().urls()[0].toLocalFile()
-            if file.endswith(".csv"):
+            if file.lower().endswith('.csv'):
                 event.acceptProposedAction()
             else:
                 event.ignore()
@@ -177,8 +205,10 @@ class CsvDropZone(QLabel):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
-                if file_path.endswith(".csv"):
-                    if self.on_csv_dropped:  # call parent callback
+                if file_path.lower().endswith('.csv'):
+                    file_name = os.path.basename(file_path)
+                    self.update_dropped_style(file_name)
+                    if self.on_csv_dropped:
                         self.on_csv_dropped(file_path)
                     break
 
@@ -186,7 +216,7 @@ class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Identity Toolbox")
-        self.setGeometry(200, 100, 1200, 700)
+        self.setGeometry(200, 100, 1200, 800)
 
         # === Main Layout ===
         main_layout = QHBoxLayout(self)
@@ -244,6 +274,23 @@ class OffboardManager(QWidget):
         self.btn_set_path = styled_button("")  # text set later
         self.btn_set_path.clicked.connect(self.toggle_default_path)
         self.update_set_path_button()  # 👈 set correct label on startup
+
+        # --- Hidden preview feature ---
+        # Button starts disabled and greyed out
+        self.btn_set_path.setEnabled(False)
+        self.btn_set_path.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                padding: 6px;
+                color: gray;
+                background-color: #f0f0f0;
+            }
+        """)
+
+        # Register the secret keyboard shortcut Cmd+Ctrl+U (Mac) or Ctrl+Alt+U (Windows/Linux)
+        self.secret_shortcut = QShortcut(QKeySequence("Meta+Ctrl+U"), self)
+        self.secret_shortcut.activated.connect(self.enable_hidden_preview)
 
         # Add buttons to layout
         for b in [self.connect_btn, self.upload_csv_btn, self.btn_set_path]:
@@ -466,9 +513,40 @@ class OffboardManager(QWidget):
         self.apps_dash_layout.addWidget(apps_scroll)
         self.dashboard_tabs.addTab(self.apps_dash_tab, "Apps Dashboard")
 
+        # Initialize tab tracking before refresh tab logic
+        self.last_active_tab = 0
+
+        # Create a fake tab that looks like a tab but acts as a refresh button
+        refresh_tab = QWidget()
+        refresh_tab_layout = QVBoxLayout(refresh_tab)
+        refresh_tab_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.refresh_dash_btn = QPushButton("↻ Refresh")
+        self.refresh_dash_btn.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        self.refresh_dash_btn.setToolTip("Manually refresh the current dashboard")
+        self.refresh_dash_btn.setFixedHeight(26)
+        self.refresh_dash_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #444;
+                border: none;
+                font-weight: bold;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                color: #000;
+                background-color: #e5e5e5;
+                border-radius: 4px;
+            }
+        """)
+
+        refresh_tab_layout.addWidget(self.refresh_dash_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.dashboard_tabs.addTab(refresh_tab, "↻ Refresh")
+        self.dashboard_tabs.tabBarClicked.connect(self.handle_tab_click)
+
         # Add Dashboard to stacked widget
         self.stacked.addWidget(self.dashboard_tabs)
-        self.page_map["dashboard"] = self.dashboard_tabs  # ✅ logical name
+        self.page_map["dashboard"] = self.dashboard_tabs
 
         # --- Identity page (table view) ---
         self.identity_page = QWidget()
@@ -691,6 +769,32 @@ class OffboardManager(QWidget):
         self.field_minorconsent = self.make_autocomplete_combobox()
         self.field_accesspackage = self.make_autocomplete_combobox()
 
+        # Ensure uniform height & width for right column
+        RIGHT_COL_WIDTH = 200
+        RIGHT_COL_HEIGHT = 28
+
+        for widget in [
+            self.field_domain,
+            self.field_password,
+            self.field_jobtitle,
+            self.field_company,
+            self.field_department,
+            self.field_city,
+            self.field_country,
+            self.field_state,
+            self.field_office,
+            self.field_manager,
+            self.field_sponsors,
+            self.field_accountenabled,
+            self.field_usagelocation,
+            self.field_preferreddatalocation,
+            self.field_agegroup,
+            self.field_minorconsent,
+            self.field_accesspackage,
+        ]:
+            widget.setFixedWidth(RIGHT_COL_WIDTH)
+            widget.setFixedHeight(RIGHT_COL_HEIGHT)
+
         # --- Add to grid (row, col) ---
         fields_layout.addWidget(QLabel("Display Name"), 0, 0)
         fields_layout.addWidget(self.field_displayname, 0, 1)
@@ -778,6 +882,15 @@ class OffboardManager(QWidget):
 
         fields_layout.addWidget(QLabel("Access Package"), 16, 2)
         fields_layout.addWidget(self.field_accesspackage, 16, 3)
+
+        # Force both field columns to use fixed width
+        fields_layout.setColumnMinimumWidth(1, 200)  # left fields
+        fields_layout.setColumnMinimumWidth(3, 200)  # right fields
+
+        fields_layout.setColumnStretch(0, 0)  # label columns fixed
+        fields_layout.setColumnStretch(2, 0)
+        fields_layout.setColumnStretch(1, 1)  # field columns aligned
+        fields_layout.setColumnStretch(3, 1)
 
         # === Right Frame: Templates, Actions, Random User Generator ===
         right_panel = QVBoxLayout()
@@ -928,6 +1041,26 @@ class OffboardManager(QWidget):
 
         self.ps_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Powershell_Scripts")
 
+    def enable_hidden_preview(self):
+        """Easter egg: unlock the hidden Set Path button."""
+        if not self.btn_set_path.isEnabled():
+            self.btn_set_path.setEnabled(True)
+            self.btn_set_path.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #bbb;
+                    border-radius: 6px;
+                    padding: 6px;
+                    background-color: #0078d7;
+                    color: white;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #1e90ff;
+                }
+            """)
+            QMessageBox.information(self, "Preview Mode Activated",
+                                    "🔓 Preview feature unlocked!\nYou can now change the default CSV directory.")
+
     def is_using_default_identity_dir(self):
         """Check if current default path is Database_Identity."""
         base_dir = os.path.dirname(__file__)
@@ -959,7 +1092,7 @@ class OffboardManager(QWidget):
 
         # Refresh comboboxes after path change
         self.try_populate_comboboxes()
-        self.refresh_csv_lists()
+        # self.refresh_csv_lists()
 
     def update_set_path_button(self):
         """Update the button label depending on current default path."""
@@ -1167,7 +1300,7 @@ class OffboardManager(QWidget):
             self.disable_selected_user(upns)
 
     def on_script_finished(self, msg):
-        self.refresh_csv_lists()
+        # self.refresh_csv_lists()
         QMessageBox.information(self, "Success", msg)
 
     def refresh_log_list(self):
@@ -1191,7 +1324,11 @@ class OffboardManager(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to load log:\n{e}")
 
     # --- CSV handling ---
-    def refresh_csv_lists(self):
+    def refresh_csv_lists(self, target=None):
+        """
+        Refresh CSV combo boxes and dashboards.
+        If `target` is one of ["identity", "devices", "apps"], refresh only that.
+        """
         base_dir = os.path.dirname(os.path.abspath(__file__))
 
         # Ensure required folders exist
@@ -1203,27 +1340,12 @@ class OffboardManager(QWidget):
             "Random_Users",
             "Powershell_Scripts"
         ]:
-            path = os.path.join(base_dir, folder)
-            if not os.path.exists(path):
-                os.makedirs(path)
+            os.makedirs(os.path.join(base_dir, folder), exist_ok=True)
 
         # Identity CSVs
         identity_dir = self.get_default_csv_path()
         identity_csvs = glob.glob(os.path.join(identity_dir, "*.csv"))
-
-        # Sort by modification time (latest first)
         identity_csvs.sort(key=os.path.getmtime, reverse=True)
-
-        # Populate Identity selectors
-        for cb in [self.csv_selector, self.identity_dash_selector]:
-            cb.clear()
-            if not identity_csvs:
-                cb.addItem("No CSV found")
-            else:
-                for f in identity_csvs:
-                    cb.addItem(f)
-                # Auto-select the most recent CSV (index 0 after sorting)
-                cb.setCurrentIndex(0)
 
         # Devices CSVs
         devices_dir = os.path.join(base_dir, "Database_Devices")
@@ -1233,21 +1355,59 @@ class OffboardManager(QWidget):
         apps_dir = os.path.join(base_dir, "Database_Apps")
         apps_csvs = glob.glob(os.path.join(apps_dir, "*.csv"))
 
-        # Populate Devices selector
-        self.devices_dash_selector.clear()
-        if not devices_csvs:
-            self.devices_dash_selector.addItem("No CSV found")
-        else:
-            for f in devices_csvs:
-                self.devices_dash_selector.addItem(f)
+        # --- selective refresh logic ---
+        if target in [None, "identity"]:
+            self.csv_selector.clear()
+            self.identity_dash_selector.clear()
+            if not identity_csvs:
+                for cb in [self.csv_selector, self.identity_dash_selector]:
+                    cb.addItem("No CSV found")
+            else:
+                for cb in [self.csv_selector, self.identity_dash_selector]:
+                    for f in identity_csvs:
+                        cb.addItem(f)
+                    cb.setCurrentIndex(0)
 
-        # Populate Apps selector
-        self.apps_dash_selector.clear()
-        if not apps_csvs:
-            self.apps_dash_selector.addItem("No CSV found")
+        if target in [None, "devices"]:
+            self.devices_dash_selector.clear()
+            if not devices_csvs:
+                self.devices_dash_selector.addItem("No CSV found")
+            else:
+                for f in devices_csvs:
+                    self.devices_dash_selector.addItem(f)
+                self.devices_dash_selector.setCurrentIndex(0)
+
+        if target in [None, "apps"]:
+            self.apps_dash_selector.clear()
+            if not apps_csvs:
+                self.apps_dash_selector.addItem("No CSV found")
+            else:
+                for f in apps_csvs:
+                    self.apps_dash_selector.addItem(f)
+                self.apps_dash_selector.setCurrentIndex(0)
+
+    def handle_tab_click(self, index):
+        """Handle clicks on dashboard tabs including the Refresh pseudo-tab."""
+        tab_count = self.dashboard_tabs.count()
+        refresh_index = tab_count - 1  # the last tab is Refresh
+
+        if index == refresh_index:
+            # Prevent tab switch
+            self.dashboard_tabs.setCurrentIndex(self.last_active_tab)
+            self.refresh_active_dashboard()
         else:
-            for f in apps_csvs:
-                self.apps_dash_selector.addItem(f)
+            self.last_active_tab = index
+
+    def refresh_active_dashboard(self):
+        idx = self.dashboard_tabs.currentIndex()
+        if idx == 0:
+            self.refresh_csv_lists("identity")
+        elif idx == 1:
+            self.refresh_csv_lists("devices")
+        elif idx == 2:
+            self.refresh_csv_lists("apps")
+
+        QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
     def load_selected_csv(self):
         path = self.csv_selector.currentText()
@@ -1500,172 +1660,208 @@ class OffboardManager(QWidget):
                 c = 0
 
     def update_apps_dashboard_from_csv(self, combo, layout):
-        # clear
-        for i in reversed(range(layout.count())):
-            item = layout.itemAt(i)
-            if item and item.widget():
-                layout.removeWidget(item.widget())
-                item.widget().deleteLater()
+        """
+        Safely rebuild the Apps dashboard from the selected CSV.
 
-        path = combo.currentText()
-        if not path.endswith(".csv"):
-            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+        This version prevents re-entrancy and blocks signals while we clear/rebuild
+        the grid to avoid crashes when the function is triggered from a refresh.
+        """
+        # ---- reentrancy guard ----
+        if getattr(self, "_apps_dash_refreshing", False):
+            # Already running; ignore this re-entry safely.
             return
+        self._apps_dash_refreshing = True
 
-        # auto-detect delimiter (same as loaders)
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                sample = f.read(2048)
-                delimiter = csv.Sniffer().sniff(sample).delimiter
-            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            if combo is None or layout is None:
+                return
+
+            # Block signals from the selector while we work
+            from PyQt6.QtCore import QSignalBlocker
+            _blocker = QSignalBlocker(combo)
+
+            # ---- clear old widgets safely ----
+            # (deleteLater is fine; they’re not parents of the combo)
+            for i in reversed(range(layout.count())):
+                item = layout.itemAt(i)
+                if item and item.widget():
+                    w = item.widget()
+                    layout.removeWidget(w)
+                    w.deleteLater()
+
+            # ---- read file path ----
+            path = combo.currentText()
+            if not path or not path.endswith(".csv") or not os.path.exists(path):
+                layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+                return
+
+            # ---- auto-detect delimiter (robust) ----
+            import csv
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    sample = f.read(2048)
+                    try:
+                        delimiter = csv.Sniffer().sniff(sample).delimiter
+                    except Exception:
+                        # fallback: common separators
+                        delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+                df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            except Exception as e:
+                layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+                return
+
+            total = len(df)
+            if total == 0:
+                layout.addWidget(QLabel("No data in this CSV"), 0, 0)
+                return
+
+            # ---- helpers ----
+            def s(col):
+                return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+            # ---- metrics (unchanged) ----
+            installs = total
+            unique_apps = s("AppDisplayName").replace("", pd.NA).dropna().nunique()
+            unique_devices = s("DeviceName").replace("", pd.NA).dropna().nunique()
+            unique_users = s("UserPrincipalName").replace("", pd.NA).dropna().nunique()
+
+            platform_series = s("Platform").str.lower()
+            win_count = (platform_series == "windows").sum()
+            mac_count = (platform_series == "macos").sum()
+            ios_count = (platform_series == "ios").sum()
+            android_count = (platform_series == "android").sum()
+            other_platform = total - (win_count + mac_count + ios_count + android_count)
+
+            publisher_empty = s("Publisher").str.strip().eq("").sum()
+
+            # ---- card factory (unchanged) ----
+            def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+                card = QFrame()
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
+                        border-radius: 12px; padding: 16px;
+                    }}
+                    QFrame:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333); }}
+                    QLabel {{ color: white; background: transparent; }}
+                """)
+                shadow = QGraphicsDropShadowEffect()
+                shadow.setBlurRadius(25);
+                shadow.setOffset(0, 4);
+                shadow.setColor(QColor(0, 0, 0, 160))
+                card.setGraphicsEffect(shadow)
+
+                v = QVBoxLayout(card)
+                row = QHBoxLayout()
+                if icon:
+                    il = QLabel(icon);
+                    il.setStyleSheet("font-size:20px; margin-right:8px;")
+                    row.addWidget(il)
+                tl = QLabel(title);
+                tl.setStyleSheet("font-size:14px; font-weight:bold;")
+                row.addWidget(tl);
+                row.addStretch();
+                v.addLayout(row)
+
+                vl = QLabel(str(value))
+                vl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+                v.addWidget(vl)
+
+                if subtitle:
+                    sl = QLabel(subtitle);
+                    sl.setStyleSheet("font-size:12px; color:#bdc3c7;")
+                    v.addWidget(sl)
+
+                if on_click:
+                    card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                    card.mousePressEvent = lambda e: on_click()
+                return card
+
+            cards = [
+                ("Installations", installs, "#34495e", "📦", "All rows", lambda: self.show_filtered_apps("ALL")),
+                ("Unique Apps", unique_apps, "#2c3e50", "🧩", "Distinct AppDisplayName",
+                 lambda: self.show_filtered_apps("DEDUP_APPS")),
+                ("Unique Devices", unique_devices, "#2980b9", "💻", "Distinct DeviceName",
+                 lambda: self.show_filtered_apps("DEDUP_DEVICES")),
+                ("Unique Users", unique_users, "#16a085", "👤", "Distinct UserPrincipalName",
+                 lambda: self.show_filtered_apps("DEDUP_USERS")),
+
+                ("Windows", win_count, "#3498db", "🪟", "", lambda: self.show_filtered_apps("PLATFORM", "windows")),
+                ("macOS", mac_count, "#9b59b6", "🍎", "", lambda: self.show_filtered_apps("PLATFORM", "macos")),
+                ("iOS", ios_count, "#e67e22", "📱", "", lambda: self.show_filtered_apps("PLATFORM", "ios")),
+                ("Android", android_count, "#27ae60", "🤖", "", lambda: self.show_filtered_apps("PLATFORM", "android")),
+                ("Other", other_platform, "#7f8c8d", "❓", "Other platforms",
+                 lambda: self.show_filtered_apps("PLATFORM", "")),
+
+                ("Publisher missing", publisher_empty, "#d35400", "⚠️", "Publisher empty",
+                 lambda: self.show_filtered_apps("PUBLISHER_EMPTY")),
+            ]
+
+            cols = 3
+            r = c = 0
+            for title, val, col_hex, icon, sub, cb in cards:
+                layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
+                c += 1
+                if c == cols:
+                    r += 1;
+                    c = 0
+
+            # ---- small "Top ..." tables ----
+            def make_top_table(title, series: pd.Series, n=10):
+                vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+                frame = QFrame()
+                frame.setStyleSheet("""
+                    QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                    QLabel { color: white; }
+                    QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                    QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+                """)
+                v = QVBoxLayout(frame)
+                t = QLabel(title);
+                t.setStyleSheet("font-size:14px; font-weight:bold;");
+                v.addWidget(t)
+
+                tbl = QTableWidget()
+                tbl.setRowCount(len(vc));
+                tbl.setColumnCount(2)
+                tbl.setHorizontalHeaderLabels(["Value", "Count"])
+                tbl.verticalHeader().setVisible(False)
+                tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+                tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+                hdr = tbl.horizontalHeader()
+                hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+                hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+                for i, (k, cnt) in enumerate(vc.items()):
+                    tbl.setItem(i, 0, QTableWidgetItem(str(k)))
+                    tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
+
+                tbl.resizeColumnsToContents()
+                tbl.setFixedHeight(250)
+                v.addWidget(tbl)
+                return frame
+
+            layout.addWidget(make_top_table("Top Apps", s("AppDisplayName")), r, 0)
+            layout.addWidget(make_top_table("Top Publishers", s("Publisher")), r, 1)
+            layout.addWidget(make_top_table("Top Platforms", s("Platform")), r, 2)
+
         except Exception as e:
-            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
-            return
+            # Don't kill the app; show a soft error and log to console
+            print(f"❌ update_apps_dashboard_from_csv error: {e}")
+            try:
+                layout.addWidget(QLabel(f"Failed to render: {e}"), 0, 0)
+            except Exception:
+                pass
 
-        total = len(df)
-        if total == 0:
-            layout.addWidget(QLabel("No data in this CSV"), 0, 0)
-            return
-
-        def s(col):
-            return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
-
-        # metrics (based on your screenshot headers)
-        installs = total
-        unique_apps = s("AppDisplayName").replace("", pd.NA).dropna().nunique()
-        unique_devices = s("DeviceName").replace("", pd.NA).dropna().nunique()
-        unique_users = s("UserPrincipalName").replace("", pd.NA).dropna().nunique()
-
-        platform_series = s("Platform").str.lower()
-        win_count = (platform_series == "windows").sum()
-        mac_count = (platform_series == "macos").sum()
-        ios_count = (platform_series == "ios").sum()
-        android_count = (platform_series == "android").sum()
-        other_platform = total - (win_count + mac_count + ios_count + android_count)
-
-        publisher_empty = s("Publisher").str.strip().eq("").sum()
-
-        # ---- card factory (clickable) ----
-        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
-            card = QFrame()
-            card.setStyleSheet(f"""
-                QFrame {{
-                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
-                    border-radius: 12px; padding: 16px;
-                }}
-                QFrame:hover {{
-                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333);
-                }}
-                QLabel {{ color: white; background: transparent; }}
-            """)
-            shadow = QGraphicsDropShadowEffect()
-            shadow.setBlurRadius(25);
-            shadow.setOffset(0, 4);
-            shadow.setColor(QColor(0, 0, 0, 160))
-            card.setGraphicsEffect(shadow)
-
-            v = QVBoxLayout(card)
-            row = QHBoxLayout()
-            if icon:
-                il = QLabel(icon);
-                il.setStyleSheet("font-size:20px; margin-right:8px;")
-                row.addWidget(il)
-            tl = QLabel(title);
-            tl.setStyleSheet("font-size:14px; font-weight:bold;")
-            row.addWidget(tl);
-            row.addStretch();
-            v.addLayout(row)
-
-            vl = QLabel(str(value))
-            vl.setStyleSheet("""
-                font-size: 28px;
-                font-weight: bold;
-                background: transparent;
-            """)
-            v.addWidget(vl)
-
-            if subtitle:
-                sl = QLabel(subtitle);
-                sl.setStyleSheet("font-size:12px; color:#bdc3c7;")
-                v.addWidget(sl)
-
-            if on_click:
-                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-                card.mousePressEvent = lambda e: on_click()
-            return card
-
-        cards = [
-            ("Installations", installs, "#34495e", "📦", "All rows", lambda: self.show_filtered_apps("ALL")),
-            ("Unique Apps", unique_apps, "#2c3e50", "🧩", "Distinct AppDisplayName",
-             lambda: self.show_filtered_apps("DEDUP_APPS")),
-            ("Unique Devices", unique_devices, "#2980b9", "💻", "Distinct DeviceName",
-             lambda: self.show_filtered_apps("DEDUP_DEVICES")),
-            ("Unique Users", unique_users, "#16a085", "👤", "Distinct UserPrincipalName",
-             lambda: self.show_filtered_apps("DEDUP_USERS")),
-
-            ("Windows", win_count, "#3498db", "🪟", "", lambda: self.show_filtered_apps("PLATFORM", "windows")),
-            ("macOS", mac_count, "#9b59b6", "🍎", "", lambda: self.show_filtered_apps("PLATFORM", "macos")),
-            ("iOS", ios_count, "#e67e22", "📱", "", lambda: self.show_filtered_apps("PLATFORM", "ios")),
-            ("Android", android_count, "#27ae60", "🤖", "", lambda: self.show_filtered_apps("PLATFORM", "android")),
-            ("Other", other_platform, "#7f8c8d", "❓", "Other platforms",
-             lambda: self.show_filtered_apps("PLATFORM", "")),
-
-            ("Publisher missing", publisher_empty, "#d35400", "⚠️", "Publisher empty",
-             lambda: self.show_filtered_apps("PUBLISHER_EMPTY")),
-        ]
-
-        cols = 3
-        r = c = 0
-        for title, val, col_hex, icon, sub, cb in cards:
-            layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
-            c += 1
-            if c == cols:
-                r += 1;
-                c = 0
-
-        # ---- small "Top ..." tables: Top Apps / Top Publishers / Top Platforms ----
-        def make_top_table(title, series: pd.Series, n=10):
-            vc = series[series.str.strip().ne("")].value_counts().head(n)
-
-            frame = QFrame()
-            frame.setStyleSheet("""
-                QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
-                QLabel { color: white; }
-                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
-                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
-            """)
-            v = QVBoxLayout(frame)
-
-            t = QLabel(title)
-            t.setStyleSheet("font-size:14px; font-weight:bold;")
-            v.addWidget(t)
-
-            tbl = QTableWidget()
-            tbl.setRowCount(len(vc))
-            tbl.setColumnCount(2)
-            tbl.setHorizontalHeaderLabels(["Value", "Count"])
-            tbl.verticalHeader().setVisible(False)
-
-            # ✅ PyQt6 enums
-            tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-            tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-
-            hdr = tbl.horizontalHeader()
-            hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-
-            for i, (k, cnt) in enumerate(vc.items()):
-                tbl.setItem(i, 0, QTableWidgetItem(str(k)))
-                tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
-
-            tbl.resizeColumnsToContents()
-            tbl.setFixedHeight(250)
-            v.addWidget(tbl)
-            return frame
-
-        layout.addWidget(make_top_table("Top Apps", s("AppDisplayName")), r, 0)
-        layout.addWidget(make_top_table("Top Publishers", s("Publisher")), r, 1)
-        layout.addWidget(make_top_table("Top Platforms", s("Platform")), r, 2)
+        finally:
+            # Re-enable signals and clear the guard
+            self._apps_dash_refreshing = False
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
 
     def display_dataframe(self, df: pd.DataFrame):
         self.identity_table.setRowCount(0)

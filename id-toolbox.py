@@ -2220,6 +2220,9 @@ class OffboardManager(QWidget):
             # 🔹 Added Parental Controls fields
             "Age group": safe_val("field_agegroup"),
             "Consent provided for minor": safe_val("field_minorconsent"),
+
+            # 🔹 Added Access Package field for PowerShell script
+            "Access Package": safe_val("field_accesspackage"),
         }
 
         # Create temporary CSV
@@ -2230,7 +2233,7 @@ class OffboardManager(QWidget):
             writer.writerow(user_data)
 
         # Run PowerShell script with CSV path
-        script_path = os.path.abspath("Powershell_Scripts/create_user.ps1")
+        script_path = os.path.abspath("Powershell_Scripts/create_user_plus_ap.ps1")
 
         params = {
             "CsvPath": tmp_csv

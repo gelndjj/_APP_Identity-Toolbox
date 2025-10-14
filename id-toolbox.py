@@ -225,6 +225,9 @@ class OffboardManager(QWidget):
         self.logs_dir = os.path.join(os.path.dirname(__file__), "Powershell_Logs")
         os.makedirs(self.logs_dir, exist_ok=True)
 
+        self.jsons_dir = os.path.join(os.path.dirname(__file__), "JSONs")
+        os.makedirs(self.jsons_dir, exist_ok=True)
+
         # --- Left menu with framed blocks ---
         left_panel = QVBoxLayout()
 
@@ -1027,7 +1030,7 @@ class OffboardManager(QWidget):
         self.btn_devices.clicked.connect(lambda: self.show_named_page("devices"))
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
-        self.btn_create_user.clicked.connect(lambda: self.show_named_page("create_user"))
+        self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
         # Populate CSV lists
@@ -1120,6 +1123,35 @@ class OffboardManager(QWidget):
         else:
             self.tenant_info.setText("⚠️ No tenant info found.")
 
+    def load_access_packages_to_combobox(self):
+        """Load Access Packages from JSONs/AccessPackages.json into the Access Package combobox."""
+        json_path = os.path.join(self.jsons_dir, "AccessPackages.json")
+
+        # Clear the combobox first
+        self.field_accesspackage.clear()
+
+        # Check file existence
+        if not os.path.exists(json_path):
+            self.field_accesspackage.addItem("-- No Access Package JSON found --")
+            return
+
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if not data:
+                self.field_accesspackage.addItem("-- No Access Packages found --")
+                return
+
+            # Populate with AccessPackageName values
+            for item in data:
+                name = item.get("AccessPackageName", "").strip()
+                if name:
+                    self.field_accesspackage.addItem(name)
+
+        except Exception as e:
+            self.field_accesspackage.addItem(f"⚠️ Error loading JSON: {e}")
+
     # --- Navigation ---
     def show_named_page(self, name: str):
         """Switch stacked widget to a page by its logical name from page_map."""
@@ -1180,18 +1212,36 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "Navigation Error", f"Page name '{name}' does not exist in page_map.")
 
     def confirm_connect_to_entra(self):
+        # Step 1: Ask if user wants to retrieve Entra users
         reply = QMessageBox.question(
             self,
-            "Confirm Connection",
-            "Are you sure you want to connect to Entra?",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel
+            "Connect to Entra",
+            "Do you want to connect to Entra and retrieve user data?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
 
-        if reply == QMessageBox.StandardButton.Ok:
+        if reply == QMessageBox.StandardButton.Yes:
             self.run_powershell_script()
         else:
-            return  # silently cancel
+            # Still proceed to Access Package question, just skip user retrieval
+            self.ask_retrieve_access_packages()
+            return
+
+        # Once user data retrieval finishes → chain Access Package prompt
+        self.worker.finished.connect(self.ask_retrieve_access_packages)
+
+    def ask_retrieve_access_packages(self, _=None):
+        reply = QMessageBox.question(
+            self,
+            "Retrieve Access Packages?",
+            "Would you like to retrieve Access Packages and save them as JSON?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.run_access_package_script()
 
     def run_powershell_script(self):
         script_path = os.path.join(self.ps_scripts_dir, "retrieve_users_data_batch.ps1")
@@ -1214,6 +1264,42 @@ class OffboardManager(QWidget):
 
         self.worker.start()
         self.show_named_page("console")  # Switch to console tab
+
+    def run_access_package_script(self):
+        script_path = os.path.join(self.ps_scripts_dir, "export-entra_accesspackages.ps1")
+
+        if not os.path.exists(script_path):
+            QMessageBox.warning(
+                self,
+                "Missing Script",
+                f"The script '{os.path.basename(script_path)}' was not found in Powershell_Scripts.",
+            )
+            return
+
+        # Output JSON to JSONs folder
+        output_json_path = os.path.join(self.jsons_dir, "AccessPackages.json")
+
+        # Log file
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(self.logs_dir, f"{timestamp}_Export-EntraAccessPackages.log")
+
+        self.console_output.clear()
+        self.worker = PowerShellLoggerWorker(script_path, ["-OutputPath", output_json_path], log_file)
+
+        # Connect signals
+        self.worker.output.connect(lambda line: self.console_output.append(line))
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
+        self.worker.finished.connect(
+            lambda msg: QMessageBox.information(
+                self,
+                "Access Packages Retrieved",
+                f"✅ Access Packages export completed.\n\nSaved to:\n{output_json_path}",
+            )
+        )
+        self.worker.finished.connect(self.refresh_log_list)
+
+        self.worker.start()
+        self.show_named_page("console")
 
     def run_powershell_with_output(self, script_path, params: dict):
         self.console_output.clear()
@@ -1337,6 +1423,7 @@ class OffboardManager(QWidget):
             "Database_Devices",
             "Database_Apps",
             "Powershell_Logs",
+            "JSONs",
             "Random_Users",
             "Powershell_Scripts"
         ]:

@@ -212,6 +212,64 @@ while (-not $parser.EndOfData) {
             }
         }
     }
+
+    # ------------------------------------------------------
+    # Access Package assignment
+    # ------------------------------------------------------
+    if ($AccessPackage) {
+        Write-Host "🧩 CSV Access Package detected: '$AccessPackage'" -ForegroundColor Cyan
+
+        # Locate the AccessPackages.json file (same folder structure)
+        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+        $jsonPath  = Join-Path $scriptDir "..\JSONs\AccessPackages.json"
+
+        if (Test-Path $jsonPath) {
+            try {
+                $jsonContent = Get-Content -Raw -Path $jsonPath | ConvertFrom-Json
+                $ap = $jsonContent | Where-Object { $_.AccessPackageName -eq $AccessPackage }
+
+                if ($ap) {
+                    $policy = $ap.Policies | Where-Object { $_.Status -eq "Enabled" } | Select-Object -First 1
+                    if (-not $policy) { $policy = $ap.Policies[0] }
+
+                    $accessPackageId = $ap.AccessPackageId
+                    $policyId = $policy.PolicyId
+
+                    Write-Host "🎁 Assigning Access Package '$AccessPackage' (AccessPackageID: $accessPackageId | PolicyID: $policyId)..." -ForegroundColor Cyan
+
+                    # Build the request body
+                    $params = @{
+                        requestType = "AdminAdd"
+                        assignment  = @{
+                            targetId           = $newUser.Id
+                            assignmentPolicyId = $policyId
+                            accessPackageId    = $accessPackageId
+                        }
+                    }
+
+                    try {
+                        $response = New-MgEntitlementManagementAssignmentRequest -BodyParameter $params -ErrorAction Stop
+                        if ($response.id) {
+                            Write-Host "   - ✅ Access Package assigned successfully (Request ID: $($response.id))" -ForegroundColor Green
+                        } else {
+                            Write-Host "   - ⚠️ Access Package request succeeded but no ID returned. Verify in Entra portal." -ForegroundColor Yellow
+                        }
+                    } catch {
+                        Write-Host "❌ Failed to assign Access Package '$AccessPackage' - $($_.Exception.Message)" -ForegroundColor Red
+                        if ($_.ErrorDetails.Message) {
+                            Write-Host "🪣 Graph Response: $($_.ErrorDetails.Message)" -ForegroundColor DarkYellow
+                        }
+                    }
+                } else {
+                    Write-Host "⚠️ Access Package '$AccessPackage' not found in JSON." -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "⚠️ Failed to read or parse AccessPackages.json: $_" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "⚠️ AccessPackages.json not found in $jsonPath" -ForegroundColor Yellow
+        }
+    }
 }
 
 # Clean up parser

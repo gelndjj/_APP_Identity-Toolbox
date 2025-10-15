@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QMessageBox, QComboBox, QLineEdit,
     QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
     QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
-    QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog
+    QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog,
+    QFormLayout, QDialog
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor
@@ -212,6 +213,145 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
+class CompareGroupsWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, user1, user2, script_path):
+        super().__init__()
+        self.user1 = user1
+        self.user2 = user2
+        self.script_path = script_path
+
+    def run(self):
+        try:
+            cmd = [
+                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", self.script_path,
+                "-User1", self.user1,
+                "-User2", self.user2
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            output = result.stdout.strip()
+
+            if not output:
+                raise ValueError(f"No output returned. Stderr: {result.stderr.strip()}")
+
+            data = json.loads(output)
+            self.finished.emit(data)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+# --- Main Dialog ---
+class GroupsComparisonDialog(QDialog):
+    def __init__(self, parent=None, upn_list=None):
+        super().__init__(parent)
+        self.setWindowTitle("User Groups Comparison")
+        self.setMinimumWidth(900)
+        self.upn_list = sorted(upn_list or [])
+
+        layout = QVBoxLayout(self)
+
+        # --- Form section ---
+        form_layout = QFormLayout()
+        self.user1_combo = QComboBox()
+        self.user2_combo = QComboBox()
+
+        # ✅ make combobox editable + searchable
+        self._setup_searchable_combobox(self.user1_combo, self.upn_list)
+        self._setup_searchable_combobox(self.user2_combo, self.upn_list)
+
+        form_layout.addRow("User 1 (UPN):", self.user1_combo)
+        form_layout.addRow("User 2 (UPN):", self.user2_combo)
+        layout.addLayout(form_layout)
+
+        # --- Compare button ---
+        self.compare_button = QPushButton("Compare Groups")
+        self.compare_button.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.compare_button.clicked.connect(self.compare_groups)
+        layout.addWidget(self.compare_button)
+
+        # --- Results table ---
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels([
+            "User 1 Groups",
+            "User 2 Groups",
+            "Missing in User 1",
+            "Missing in User 2"
+        ])
+
+        # ✅ all columns equal width
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.table)
+
+    # --- helper to make searchable combobox ---
+    def _setup_searchable_combobox(self, combo, items):
+        combo.setEditable(True)
+        combo.addItems([""] + items)
+
+        completer = QCompleter(items)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        combo.setCompleter(completer)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+
+    # --- run PowerShell in background thread ---
+    def compare_groups(self):
+        user1 = self.user1_combo.currentText().strip()
+        user2 = self.user2_combo.currentText().strip()
+        if not user1 or not user2:
+            QMessageBox.warning(self, "Missing input", "Please select both User 1 and User 2 before comparing.")
+            return
+
+        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "compare_user_groups.ps1")
+
+        # Disable button and show busy text
+        self.compare_button.setEnabled(False)
+        self.compare_button.setText("⏳ Comparing...")
+
+        # Start background thread
+        self.worker = CompareGroupsWorker(user1, user2, script_path)
+        self.worker.finished.connect(self.on_compare_finished)
+        self.worker.error.connect(self.on_compare_error)
+        self.worker.start()
+
+    # --- handle results ---
+    def on_compare_finished(self, data):
+        self.compare_button.setEnabled(True)
+        self.compare_button.setText("Compare Groups")
+        self.populate_table(data)
+
+    def on_compare_error(self, message):
+        self.compare_button.setEnabled(True)
+        self.compare_button.setText("Compare Groups")
+        QMessageBox.critical(self, "Error", f"Comparison failed:\n\n{message}")
+
+    # --- display JSON data in the table ---
+    def populate_table(self, data):
+        self.table.setRowCount(0)
+        user1_groups = data.get("User1Groups", [])
+        user2_groups = data.get("User2Groups", [])
+        missing1 = data.get("MissingInUser1", [])
+        missing2 = data.get("MissingInUser2", [])
+
+        max_rows = max(len(user1_groups), len(user2_groups), len(missing1), len(missing2))
+        self.table.setRowCount(max_rows)
+
+        for i in range(max_rows):
+            self.table.setItem(i, 0, QTableWidgetItem(user1_groups[i] if i < len(user1_groups) else ""))
+            self.table.setItem(i, 1, QTableWidgetItem(user2_groups[i] if i < len(user2_groups) else ""))
+            self.table.setItem(i, 2, QTableWidgetItem(missing1[i] if i < len(missing1) else ""))
+            self.table.setItem(i, 3, QTableWidgetItem(missing2[i] if i < len(missing2) else ""))
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.resizeRowsToContents()
+
 class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
@@ -376,6 +516,22 @@ class OffboardManager(QWidget):
         """)
 
         user_layout.addWidget(self.btn_create_user)
+
+        # Create User Groups Comparison button
+        self.btn_user_grps_comparison = QPushButton("User Groups Comparison")
+        self.btn_user_grps_comparison.setFixedHeight(40)
+        self.btn_user_grps_comparison.setStyleSheet("""
+            QPushButton {
+                border: 1px solid #bbb;
+                border-radius: 6px;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #dcdcdc;
+            }
+        """)
+
+        user_layout.addWidget(self.btn_user_grps_comparison)
 
         # Dropped CSV button
         self.btn_dropped_csv = QPushButton("Dropped CSV")
@@ -1031,6 +1187,7 @@ class OffboardManager(QWidget):
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
         self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
+        self.btn_user_grps_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
         # Populate CSV lists
@@ -1132,7 +1289,7 @@ class OffboardManager(QWidget):
 
         # Check file existence
         if not os.path.exists(json_path):
-            self.field_accesspackage.addItem("-- No Access Package JSON found --")
+            self.field_accesspackage.addItem("No Access Package JSON found")
             return
 
         try:
@@ -1140,7 +1297,7 @@ class OffboardManager(QWidget):
                 data = json.load(f)
 
             if not data:
-                self.field_accesspackage.addItem("-- No Access Packages found --")
+                self.field_accesspackage.addItem("No Access Packages found")
                 return
 
             # Populate with AccessPackageName values
@@ -1345,6 +1502,14 @@ class OffboardManager(QWidget):
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
+    def open_groups_comparison_window(self):
+        upn_list = []
+        if hasattr(self, "current_df") and "UserPrincipalName" in self.current_df.columns:
+            upn_list = sorted(self.current_df["UserPrincipalName"].dropna().unique().tolist())
+
+        dlg = GroupsComparisonDialog(self, upn_list)
+        dlg.exec()
+
     def disable_selected_user(self, upns):
         script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "disable_users.ps1")
 
@@ -1431,16 +1596,18 @@ class OffboardManager(QWidget):
 
         # Identity CSVs
         identity_dir = self.get_default_csv_path()
-        identity_csvs = glob.glob(os.path.join(identity_dir, "*.csv"))
+        identity_csvs = glob.glob(os.path.join(identity_dir, "*_EntraIdentities.csv"))
         identity_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # Devices CSVs
         devices_dir = os.path.join(base_dir, "Database_Devices")
-        devices_csvs = glob.glob(os.path.join(devices_dir, "*.csv"))
+        devices_csvs = glob.glob(os.path.join(devices_dir, "*_EntraDevices.csv"))
+        devices_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # Apps CSVs
         apps_dir = os.path.join(base_dir, "Database_Apps")
-        apps_csvs = glob.glob(os.path.join(apps_dir, "*.csv"))
+        apps_csvs = glob.glob(os.path.join(apps_dir, "*_EntraApps.csv"))
+        apps_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # --- selective refresh logic ---
         if target in [None, "identity"]:
@@ -2233,7 +2400,7 @@ class OffboardManager(QWidget):
             writer.writerow(user_data)
 
         # Run PowerShell script with CSV path
-        script_path = os.path.abspath("Powershell_Scripts/create_user_plus_ap.ps1")
+        script_path = os.path.abspath("Powershell_Scripts/create_user.ps1")
 
         params = {
             "CsvPath": tmp_csv
@@ -2808,7 +2975,7 @@ class OffboardManager(QWidget):
         folder = os.path.join(os.path.dirname(__file__), "Database_Devices")
         self.devices_csv_selector.clear()
         if os.path.exists(folder):
-            files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+            files = [f for f in os.listdir(folder) if f.endswith("_EntraDevices.csv")]
             for f in sorted(files, reverse=True):
                 self.devices_csv_selector.addItem(os.path.join(folder, f))
 
@@ -2822,7 +2989,7 @@ class OffboardManager(QWidget):
         folder = os.path.join(os.path.dirname(__file__), "Database_Apps")
         self.apps_csv_selector.clear()
         if os.path.exists(folder):
-            files = [f for f in os.listdir(folder) if f.endswith(".csv")]
+            files = [f for f in os.listdir(folder) if f.endswith("_EntraApps.csv")]
             for f in sorted(files, reverse=True):
                 self.apps_csv_selector.addItem(os.path.join(folder, f))
 
@@ -2860,37 +3027,43 @@ class OffboardManager(QWidget):
         try:
             df = pd.read_csv(csv_path, dtype=str, sep=";").fillna("")
 
-            def safe_set(combo_attr, column_name):
-                if hasattr(self, combo_attr) and column_name in df.columns:
+            def safe_set(combo_attr, column_name, values_override=None):
+                """Attach unique values from CSV or override list to the combo with autocomplete."""
+                if hasattr(self, combo_attr):
                     combo = getattr(self, combo_attr)
-                    # build unique, trimmed, sorted values
-                    values = (
-                        df[column_name].astype(str).fillna("")
-                        .str.strip()
-                        .replace({"nan": ""})
-                        .drop_duplicates()
-                        .sort_values()
-                        .tolist()
-                    )
 
-                    if values:  # only do something if we actually have data
+                    # use override if provided, otherwise load from CSV
+                    if values_override is not None:
+                        values = values_override
+                    elif column_name in df.columns:
+                        values = (
+                            df[column_name].astype(str).fillna("")
+                            .str.strip()
+                            .replace({"nan": ""})
+                            .drop_duplicates()
+                            .sort_values()
+                            .tolist()
+                        )
+                    else:
+                        return  # skip silently if column not found
+
+                    if values:
                         combo.blockSignals(True)
 
-                        # Only clear if it’s empty (don’t wipe user data when switching pages)
                         if combo.count() == 0:
                             combo.addItem("")  # allow empty
-                            combo.addItems([v for v in values if v])  # skip blanks
+                            combo.addItems([v for v in values if v])
 
                         combo.blockSignals(False)
 
-                        # 🔹 attach fresh completer (case-insensitive, popup)
+                        # Attach case-insensitive popup completer
                         combo.setEditable(True)
                         comp = QCompleter(values, combo)
                         comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
                         comp.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
                         combo.setCompleter(comp)
 
-            # map CSV -> widgets (only if both exist)
+            # standard CSV-driven fields
             safe_set("field_domain", "Domain name")
             safe_set("field_jobtitle", "JobTitle")
             safe_set("field_company", "CompanyName")
@@ -2906,7 +3079,18 @@ class OffboardManager(QWidget):
             safe_set("field_domain", "Domain name")
             safe_set("field_manager", "UserPrincipalName")
             safe_set("field_sponsors", "UserPrincipalName")
-            safe_set("field_accesspackage", "Access Package")
+
+            # 🧩 Special case: Access Package values from JSON
+            json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "JSONs", "AccessPackages.json"))
+            if os.path.exists(json_path):
+                import json
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    ap_names = sorted({ap["AccessPackageName"] for ap in data if ap.get("AccessPackageName")})
+                    if ap_names:
+                        safe_set("field_accesspackage", None, ap_names)
+            else:
+                print(f"⚠️ AccessPackages.json not found at {json_path}")
 
         except Exception as e:
             print(f"Failed to populate comboboxes: {e}")

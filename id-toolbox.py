@@ -326,6 +326,38 @@ class GroupsComparisonDialog(QDialog):
         self.compare_button.setText("Compare Groups")
         self.populate_table(data)
 
+        # Add below self.populate_table(data)
+        missing1 = data.get("MissingInUser1", [])
+        missing2 = data.get("MissingInUser2", [])
+
+        if missing1 or missing2:
+            assign_btn = QPushButton("Assign Missing Groups…")
+            assign_btn.setStyleSheet("font-weight: bold; padding: 6px;")
+            assign_btn.clicked.connect(lambda: self.open_assign_dialog(data))
+            self.layout().addWidget(assign_btn)
+
+    def open_assign_dialog(self, data):
+        missing1 = data.get("MissingInUser1", [])
+        missing2 = data.get("MissingInUser2", [])
+        user1 = self.user1_combo.currentText()
+        user2 = self.user2_combo.currentText()
+
+        # Choose direction with a quick dialog
+        choice = QMessageBox.question(
+            self,
+            "Select direction",
+            f"Assign groups missing in {user2} from {user1}?\n"
+            f"Or the reverse?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if choice == QMessageBox.StandardButton.Yes:
+            dialog = AssignGroupsDialog(self, user1, user2, missing2)
+        else:
+            dialog = AssignGroupsDialog(self, user2, user1, missing1)
+        dialog.exec()
+
     def on_compare_error(self, message):
         self.compare_button.setEnabled(True)
         self.compare_button.setText("Compare Groups")
@@ -351,6 +383,127 @@ class GroupsComparisonDialog(QDialog):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
+
+class AssignGroupsDialog(QDialog):
+    def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
+        super().__init__(parent)
+        self.source_user = source_user
+        self.target_user = target_user
+        self.missing_groups = missing_groups or []
+
+        self.setWindowTitle(f"Assign Groups from {source_user} → {target_user}")
+        self.setMinimumWidth(700)
+        layout = QVBoxLayout(self)
+
+        # --- Instructions
+        info = QLabel(f"Select which groups from <b>{source_user}</b> should be assigned to <b>{target_user}</b>:")
+        layout.addWidget(info)
+
+        # --- Table with checkboxes
+        self.table = QTableWidget(len(self.missing_groups), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Group Name"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        for i, group in enumerate(self.missing_groups):
+            chk_item = QTableWidgetItem()
+            chk_item.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(i, 0, chk_item)
+            self.table.setItem(i, 1, QTableWidgetItem(group))
+
+        layout.addWidget(self.table)
+
+        # --- Buttons
+        self.assign_btn = QPushButton("Assign Selected Groups")
+        self.assign_btn.clicked.connect(self.start_assignment)
+        layout.addWidget(self.assign_btn)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        layout.addWidget(self.close_btn)
+
+    def start_assignment(self):
+        selected_groups = [
+            self.table.item(i, 1).text()
+            for i in range(self.table.rowCount())
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected_groups:
+            QMessageBox.warning(self, "No selection", "Please select at least one group to assign.")
+            return
+
+        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "assign_missing_groups.ps1")
+
+        self.assign_btn.setEnabled(False)
+        self.assign_btn.setText("⏳ Assigning...")
+
+        self.worker = AssignGroupsWorker(self.source_user, self.target_user, selected_groups, script_path)
+        self.worker.finished.connect(self.on_assignment_done)
+        self.worker.error.connect(self.on_assignment_error)
+        self.worker.start()
+
+    def on_assignment_done(self, result):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Groups")
+
+        # 🧩 Robust JSON normalization
+        try:
+            if isinstance(result, str):
+                # Try parsing again if PowerShell output was a JSON string
+                result = json.loads(result)
+            elif not isinstance(result, list):
+                # If it's a single dict, wrap it in a list
+                result = [result]
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Invalid data format:\n{e}\n\nData:\n{result}")
+            return
+
+        # 🧩 Ensure we have a list of dicts
+        rows = []
+        for r in result:
+            if isinstance(r, dict):
+                rows.append(f"{r.get('Status', 'Unknown')} → {r.get('GroupName', 'N/A')}")
+            else:
+                rows.append(str(r))
+
+        msg = "\n".join(rows)
+        QMessageBox.information(self, "Assignment completed", msg)
+
+    def on_assignment_error(self, err):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Groups")
+        QMessageBox.critical(self, "Error", f"Assignment failed:\n{err}")
+
+class AssignGroupsWorker(QThread):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+
+    def __init__(self, source_user, target_user, groups, script_path):
+        super().__init__()
+        self.source_user = source_user
+        self.target_user = target_user
+        self.groups = groups
+        self.script_path = script_path
+
+    def run(self):
+        try:
+            cmd = [
+                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", self.script_path,
+                "-SourceUserUPN", self.source_user,
+                "-TargetUserUPN", self.target_user,
+                "-GroupsToAssign"
+            ] + self.groups
+
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(result.stderr.strip() or "Unknown PowerShell error")
+
+            data = json.loads(result.stdout)
+            self.finished.emit(data)
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 class OffboardManager(QWidget):
     def __init__(self):
@@ -502,7 +655,7 @@ class OffboardManager(QWidget):
         user_layout = QVBoxLayout(frame_user)
 
         # Create User button
-        self.btn_create_user = QPushButton("Create User")
+        self.btn_create_user = QPushButton("Entra User Creation")
         self.btn_create_user.setFixedHeight(40)
         self.btn_create_user.setStyleSheet("""
             QPushButton {

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
     QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
     QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog,
-    QFormLayout, QDialog
+    QFormLayout, QDialog, QListWidgetItem, QDialogButtonBox, QListWidget
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor
@@ -244,13 +244,30 @@ class CompareGroupsWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+class GroupsWorker(QThread):
+    result_ready = pyqtSignal(str, str)  # stdout, stderr
 
-# --- Main Dialog ---
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        import subprocess
+        process = subprocess.Popen(
+            self.command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate()
+        self.result_ready.emit(stdout, stderr)
+
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
         super().__init__(parent)
         self.setWindowTitle("User Groups Comparison")
         self.setMinimumWidth(900)
+        self.setMinimumHeight(700)
         self.upn_list = sorted(upn_list or [])
 
         layout = QVBoxLayout(self)
@@ -366,11 +383,24 @@ class GroupsComparisonDialog(QDialog):
     # --- display JSON data in the table ---
     def populate_table(self, data):
         self.table.setRowCount(0)
-        user1_groups = data.get("User1Groups", [])
-        user2_groups = data.get("User2Groups", [])
-        missing1 = data.get("MissingInUser1", [])
-        missing2 = data.get("MissingInUser2", [])
 
+        # Normalize None values to empty lists
+        user1_groups = data.get("User1Groups") or []
+        user2_groups = data.get("User2Groups") or []
+        missing1 = data.get("MissingInUser1") or []
+        missing2 = data.get("MissingInUser2") or []
+
+        # Defensive: ensure all are lists
+        if not isinstance(user1_groups, list):
+            user1_groups = [str(user1_groups)]
+        if not isinstance(user2_groups, list):
+            user2_groups = [str(user2_groups)]
+        if not isinstance(missing1, list):
+            missing1 = [str(missing1)]
+        if not isinstance(missing2, list):
+            missing2 = [str(missing2)]
+
+        # Determine how many rows to show
         max_rows = max(len(user1_groups), len(user2_groups), len(missing1), len(missing2))
         self.table.setRowCount(max_rows)
 
@@ -395,7 +425,6 @@ class AssignGroupsDialog(QDialog):
         self.setMinimumWidth(700)
         layout = QVBoxLayout(self)
 
-        # --- Instructions
         info = QLabel(f"Select which groups from <b>{source_user}</b> should be assigned to <b>{target_user}</b>:")
         layout.addWidget(info)
 
@@ -403,10 +432,13 @@ class AssignGroupsDialog(QDialog):
         self.table = QTableWidget(len(self.missing_groups), 2)
         self.table.setHorizontalHeaderLabels(["Assign", "Group Name"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 70)  # make checkbox column narrow
+        self.table.horizontalHeader().setStretchLastSection(True)
 
         for i, group in enumerate(self.missing_groups):
             chk_item = QTableWidgetItem()
-            chk_item.setCheckState(Qt.CheckState.Checked)
+            chk_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            chk_item.setCheckState(Qt.CheckState.Unchecked)  # start empty
             self.table.setItem(i, 0, chk_item)
             self.table.setItem(i, 1, QTableWidgetItem(group))
 
@@ -421,6 +453,7 @@ class AssignGroupsDialog(QDialog):
         self.close_btn.clicked.connect(self.close)
         layout.addWidget(self.close_btn)
 
+    # --- Trigger background worker ---
     def start_assignment(self):
         selected_groups = [
             self.table.item(i, 1).text()
@@ -442,32 +475,74 @@ class AssignGroupsDialog(QDialog):
         self.worker.error.connect(self.on_assignment_error)
         self.worker.start()
 
+    # --- Display formatted results ---
     def on_assignment_done(self, result):
         self.assign_btn.setEnabled(True)
         self.assign_btn.setText("Assign Selected Groups")
 
-        # 🧩 Robust JSON normalization
-        try:
-            if isinstance(result, str):
-                # Try parsing again if PowerShell output was a JSON string
-                result = json.loads(result)
-            elif not isinstance(result, list):
-                # If it's a single dict, wrap it in a list
-                result = [result]
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Invalid data format:\n{e}\n\nData:\n{result}")
+        if not result:
+            QMessageBox.information(self, "Assignment Results", "No results were returned.")
             return
 
-        # 🧩 Ensure we have a list of dicts
-        rows = []
-        for r in result:
-            if isinstance(r, dict):
-                rows.append(f"{r.get('Status', 'Unknown')} → {r.get('GroupName', 'N/A')}")
-            else:
-                rows.append(str(r))
+        # --- Normalize result safely ---
+        normalized = []
+        if isinstance(result, str):
+            # Try JSON decode if possible
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, list):
+                    normalized = parsed
+                elif isinstance(parsed, dict):
+                    normalized = [parsed]
+                else:
+                    normalized = [{"GroupName": "N/A", "Status": str(parsed)}]
+            except Exception:
+                normalized = [{"GroupName": "N/A", "Status": result}]
+        elif isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict):
+                    normalized.append(item)
+                else:
+                    normalized.append({"GroupName": "N/A", "Status": str(item)})
+        elif isinstance(result, dict):
+            normalized = [result]
+        else:
+            normalized = [{"GroupName": "N/A", "Status": str(result)}]
 
-        msg = "\n".join(rows)
-        QMessageBox.information(self, "Assignment completed", msg)
+        # --- Build HTML-based formatted view ---
+        html_result = ""
+        for r in normalized:
+            group = r.get("GroupName", "N/A")
+            status = r.get("Status", "")
+
+            color = "black"
+            if "✅" in status:
+                color = "green"
+            elif "❌" in status:
+                color = "red"
+            elif "⚠️" in status:
+                color = "orange"
+
+            html_result += f"<b>{group}</b> → <span style='color:{color};'>{status}</span><br>"
+
+        # --- Scrollable dialog with Copy button ---
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Assignment Results")
+        dialog.setMinimumSize(550, 450)
+
+        layout = QVBoxLayout(dialog)
+        results_view = QTextEdit()
+        results_view.setReadOnly(True)
+        results_view.setHtml(html_result)
+        layout.addWidget(results_view)
+
+        btn_copy = QPushButton("Copy to Clipboard")
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(
+            "\n".join([f"{r.get('GroupName')} → {r.get('Status')}" for r in normalized])
+        ))
+        layout.addWidget(btn_copy)
+
+        dialog.exec()
 
     def on_assignment_error(self, err):
         self.assign_btn.setEnabled(True)
@@ -487,19 +562,27 @@ class AssignGroupsWorker(QThread):
 
     def run(self):
         try:
+            # Serialize groups as JSON (safe for spaces/special chars)
+            groups_json = json.dumps(self.groups)
+
             cmd = [
                 "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", self.script_path,
                 "-SourceUserUPN", self.source_user,
                 "-TargetUserUPN", self.target_user,
-                "-GroupsToAssign"
-            ] + self.groups
+                "-GroupsJson", groups_json
+            ]
 
             result = subprocess.run(cmd, capture_output=True, text=True)
+
             if result.returncode != 0:
                 raise Exception(result.stderr.strip() or "Unknown PowerShell error")
 
-            data = json.loads(result.stdout)
+            try:
+                data = json.loads(result.stdout)
+            except Exception:
+                data = [{"GroupName": "N/A", "Status": result.stdout.strip()}]
+
             self.finished.emit(data)
 
         except Exception as e:
@@ -611,15 +694,27 @@ class OffboardManager(QWidget):
                 background-color: transparent;
             }
         """)
-        nav_layout = QVBoxLayout(frame_nav)
+
+        # --- Create scroll area for navigation buttons ---
+        scroll_nav = QScrollArea()
+        scroll_nav.setWidgetResizable(True)
+        scroll_nav.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        nav_container = QWidget()
+        nav_layout = QVBoxLayout(nav_container)
 
         self.btn_dashboard = QPushButton("Dashboard")
-        self.btn_identity = QPushButton("Identity")
+        self.btn_identity = QPushButton("Identities")
         self.btn_devices = QPushButton("Devices")
         self.btn_apps = QPushButton("Applications")
+        self.btn_groups = QPushButton("Groups")
         self.btn_console = QPushButton("Console")
 
-        for b in [self.btn_dashboard, self.btn_identity, self.btn_devices,self.btn_apps, self.btn_console]:
+        for b in [
+            self.btn_dashboard, self.btn_identity, self.btn_devices,
+            self.btn_apps, self.btn_groups, self.btn_console
+        ]:
             b.setFixedHeight(40)
             b.setStyleSheet("""
                 QPushButton {
@@ -632,6 +727,14 @@ class OffboardManager(QWidget):
                 }
             """)
             nav_layout.addWidget(b)
+
+        nav_layout.addStretch()
+        scroll_nav.setWidget(nav_container)
+
+        # Wrap the scroll area inside the groupbox
+        vbox = QVBoxLayout(frame_nav)
+        vbox.addWidget(scroll_nav)
+        vbox.setContentsMargins(5, 5, 5, 5)
 
         left_panel.addWidget(frame_nav)
 
@@ -671,9 +774,9 @@ class OffboardManager(QWidget):
         user_layout.addWidget(self.btn_create_user)
 
         # Create User Groups Comparison button
-        self.btn_user_grps_comparison = QPushButton("User Groups Comparison")
-        self.btn_user_grps_comparison.setFixedHeight(40)
-        self.btn_user_grps_comparison.setStyleSheet("""
+        self.btn_user_groups_comparison = QPushButton("User Groups Comparison")
+        self.btn_user_groups_comparison.setFixedHeight(40)
+        self.btn_user_groups_comparison.setStyleSheet("""
             QPushButton {
                 border: 1px solid #bbb;
                 border-radius: 6px;
@@ -684,7 +787,7 @@ class OffboardManager(QWidget):
             }
         """)
 
-        user_layout.addWidget(self.btn_user_grps_comparison)
+        user_layout.addWidget(self.btn_user_groups_comparison)
 
         # Dropped CSV button
         self.btn_dropped_csv = QPushButton("Dropped CSV")
@@ -729,12 +832,11 @@ class OffboardManager(QWidget):
         # --- Dashboard page with tabs ---
         self.dashboard_tabs = QTabWidget()
 
-        # Identity Dashboard tab
+        # ---------------- Identity Dashboard ----------------
         self.identity_dash_tab = QWidget()
         self.identity_dash_scroll = QScrollArea()
         self.identity_dash_scroll.setWidgetResizable(True)
 
-        # Inner container inside scroll
         self.identity_dash_container = QWidget()
         self.identity_dash_layout = QVBoxLayout(self.identity_dash_container)
 
@@ -753,25 +855,19 @@ class OffboardManager(QWidget):
         self.identity_dash_cards = QGridLayout()
         self.identity_dash_layout.addLayout(self.identity_dash_cards)
 
-        # Add the container into the scroll area
         self.identity_dash_scroll.setWidget(self.identity_dash_container)
-
-        # Add scroll to the tab
         outer_layout = QVBoxLayout(self.identity_dash_tab)
         outer_layout.addWidget(self.identity_dash_scroll)
-
         self.dashboard_tabs.addTab(self.identity_dash_tab, "Identity Dashboard")
 
-        # Devices Dashboard tab
+        # ---------------- Devices Dashboard ----------------
         self.devices_dash_tab = QWidget()
         self.devices_dash_scroll = QScrollArea()
         self.devices_dash_scroll.setWidgetResizable(True)
 
-        # Inner container for scroll
         self.devices_dash_container = QWidget()
         self.devices_dash_layout = QVBoxLayout(self.devices_dash_container)
 
-        # Selector at the top
         self.devices_dash_selector = QComboBox()
         try:
             self.devices_dash_selector.currentIndexChanged.disconnect()
@@ -784,23 +880,22 @@ class OffboardManager(QWidget):
         )
         self.devices_dash_layout.addWidget(self.devices_dash_selector)
 
-        # Cards grid inside scroll
         self.devices_dash_cards = QGridLayout()
         self.devices_dash_layout.addLayout(self.devices_dash_cards)
 
-        # Put the container into the scroll
         self.devices_dash_scroll.setWidget(self.devices_dash_container)
-
-        # Add scroll area to the tab
         outer_layout = QVBoxLayout(self.devices_dash_tab)
         outer_layout.addWidget(self.devices_dash_scroll)
-
-        # Finally add tab
         self.dashboard_tabs.addTab(self.devices_dash_tab, "Devices Dashboard")
 
-        # Apps Dashboard tab
+        # ---------------- Apps Dashboard ----------------
         self.apps_dash_tab = QWidget()
-        self.apps_dash_layout = QVBoxLayout(self.apps_dash_tab)
+        self.apps_dash_scroll = QScrollArea()
+        self.apps_dash_scroll.setWidgetResizable(True)
+
+        self.apps_dash_container = QWidget()
+        self.apps_dash_layout = QVBoxLayout(self.apps_dash_container)
+
         self.apps_dash_selector = QComboBox()
         try:
             self.apps_dash_selector.currentIndexChanged.disconnect()
@@ -813,17 +908,41 @@ class OffboardManager(QWidget):
         )
         self.apps_dash_layout.addWidget(self.apps_dash_selector)
 
-        # Wrap the grid in a scrollable area
         self.apps_dash_cards = QGridLayout()
-        apps_dash_container = QWidget()
-        apps_dash_container.setLayout(self.apps_dash_cards)
+        self.apps_dash_layout.addLayout(self.apps_dash_cards)
 
-        apps_scroll = QScrollArea()
-        apps_scroll.setWidgetResizable(True)
-        apps_scroll.setWidget(apps_dash_container)
-
-        self.apps_dash_layout.addWidget(apps_scroll)
+        self.apps_dash_scroll.setWidget(self.apps_dash_container)
+        outer_layout = QVBoxLayout(self.apps_dash_tab)
+        outer_layout.addWidget(self.apps_dash_scroll)
         self.dashboard_tabs.addTab(self.apps_dash_tab, "Apps Dashboard")
+
+        # ---------------- Groups Dashboard ----------------
+        self.groups_dash_tab = QWidget()
+        self.groups_dash_scroll = QScrollArea()
+        self.groups_dash_scroll.setWidgetResizable(True)
+
+        self.groups_dash_container = QWidget()
+        self.groups_dash_layout = QVBoxLayout(self.groups_dash_container)
+
+        self.groups_dash_selector = QComboBox()
+        try:
+            self.groups_dash_selector.currentIndexChanged.disconnect()
+        except TypeError:
+            pass
+        self.groups_dash_selector.currentIndexChanged.connect(
+            lambda: self.update_groups_dashboard_from_csv(
+                self.groups_dash_selector, self.groups_dash_cards
+            )
+        )
+        self.groups_dash_layout.addWidget(self.groups_dash_selector)
+
+        self.groups_dash_cards = QGridLayout()
+        self.groups_dash_layout.addLayout(self.groups_dash_cards)
+
+        self.groups_dash_scroll.setWidget(self.groups_dash_container)
+        outer_layout = QVBoxLayout(self.groups_dash_tab)
+        outer_layout.addWidget(self.groups_dash_scroll)
+        self.dashboard_tabs.addTab(self.groups_dash_tab, "Groups Dashboard")
 
         # Initialize tab tracking before refresh tab logic
         self.last_active_tab = 0
@@ -944,6 +1063,35 @@ class OffboardManager(QWidget):
         self.stacked.addWidget(self.apps_page)
         self.page_map["apps"] = self.apps_page
         self.try_populate_apps_csv()
+
+        # --- Groups page (Groups view) ---
+        self.groups_page = QWidget()
+        groups_layout = QVBoxLayout(self.groups_page)
+
+        # CSV selector for groups
+        self.groups_csv_selector = QComboBox()
+        self.groups_csv_selector.currentIndexChanged.connect(self.load_selected_groups_csv)
+        groups_layout.addWidget(self.groups_csv_selector)
+
+        # Search field (App or User)
+        self.groups_search = QLineEdit()
+        self.groups_search.setPlaceholderText("Search by Groups or Group Type (contains)...")
+        self.groups_search.textChanged.connect(self.filter_groups_table)
+        groups_layout.addWidget(self.groups_search)
+
+        # Groups table
+        self.groups_table = QTableWidget()
+        self.groups_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.groups_table.horizontalHeader().setStretchLastSection(True)
+        self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.groups_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.groups_table.setSortingEnabled(True)
+        groups_layout.addWidget(self.groups_table)
+
+        # Add to stacked widget
+        self.stacked.addWidget(self.groups_page)
+        self.page_map["groups"] = self.groups_page
+        self.try_populate_groups_csv()
 
         # --- Console page ---
         self.console_page = QWidget()
@@ -1338,9 +1486,10 @@ class OffboardManager(QWidget):
         self.btn_identity.clicked.connect(lambda: self.show_named_page("identity"))
         self.btn_devices.clicked.connect(lambda: self.show_named_page("devices"))
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
+        self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
         self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
-        self.btn_user_grps_comparison.clicked.connect(self.open_groups_comparison_window)
+        self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
         # Populate CSV lists
@@ -1405,7 +1554,6 @@ class OffboardManager(QWidget):
 
         # Refresh comboboxes after path change
         self.try_populate_comboboxes()
-        # self.refresh_csv_lists()
 
     def update_set_path_button(self):
         """Update the button label depending on current default path."""
@@ -1437,12 +1585,14 @@ class OffboardManager(QWidget):
         """Load Access Packages from JSONs/AccessPackages.json into the Access Package combobox."""
         json_path = os.path.join(self.jsons_dir, "AccessPackages.json")
 
-        # Clear the combobox first
+        # Always start with a clean combobox
         self.field_accesspackage.clear()
 
-        # Check file existence
+        # Handle missing file
         if not os.path.exists(json_path):
+            self.field_accesspackage.addItem("")  # start blank
             self.field_accesspackage.addItem("No Access Package JSON found")
+            self.field_accesspackage.setCurrentIndex(0)
             return
 
         try:
@@ -1450,17 +1600,27 @@ class OffboardManager(QWidget):
                 data = json.load(f)
 
             if not data:
+                self.field_accesspackage.addItem("")  # blank
                 self.field_accesspackage.addItem("No Access Packages found")
+                self.field_accesspackage.setCurrentIndex(0)
                 return
 
-            # Populate with AccessPackageName values
-            for item in data:
-                name = item.get("AccessPackageName", "").strip()
-                if name:
-                    self.field_accesspackage.addItem(name)
+            # --- Extract Access Package Names ---
+            ap_names = [ap.get("AccessPackageName", "").strip() for ap in data if "AccessPackageName" in ap]
+
+            # Safety: ensure blank always first
+            if ap_names[0] != "":
+                ap_names.insert(0, "")
+
+            # --- Populate combo ---
+            self.field_accesspackage.addItems(ap_names)
+            self.field_accesspackage.setCurrentIndex(0)  # force blank as default
 
         except Exception as e:
+            self.field_accesspackage.clear()
+            self.field_accesspackage.addItem("")
             self.field_accesspackage.addItem(f"⚠️ Error loading JSON: {e}")
+            self.field_accesspackage.setCurrentIndex(0)
 
     # --- Navigation ---
     def show_named_page(self, name: str):
@@ -1653,6 +1813,10 @@ class OffboardManager(QWidget):
         disable_action.triggered.connect(self.confirm_disable_users)
         menu.addAction(disable_action)
 
+        assign_group_action = QAction("Assign Group(s)", self)
+        assign_group_action.triggered.connect(self.confirm_assign_groups)
+        menu.addAction(assign_group_action)
+
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
     def open_groups_comparison_window(self):
@@ -1671,6 +1835,81 @@ class OffboardManager(QWidget):
 
         self.show_named_page("console")
         self.run_powershell_with_output(script_path, params)
+
+    def assign_users_to_groups(self, upns, group_ids):
+        """Run the PowerShell script in a background thread (non-blocking)."""
+        try:
+            ps_script = os.path.join(self.ps_scripts_dir, "assign_users_to_groups.ps1")
+
+            command = [
+                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", ps_script,
+                "-UserUPNs", ",".join(upns),
+                "-GroupIDs", ",".join(group_ids)
+            ]
+
+            # Change cursor while running
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+            # Create worker and connect signal
+            self.ps_worker = GroupsWorker(command)
+            self.ps_worker.result_ready.connect(self._on_ps_results_ready)
+            self.ps_worker.finished.connect(lambda: QApplication.restoreOverrideCursor())
+            self.ps_worker.start()
+
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Error", f"Failed to start PowerShell script:\n{e}")
+
+    def _on_ps_results_ready(self, stdout, stderr):
+        """Handle and display PowerShell results."""
+        if stderr.strip():
+            QMessageBox.warning(self, "PowerShell Error", stderr.strip())
+            return
+
+        try:
+            result = json.loads(stdout)
+            if isinstance(result, dict):
+                result = [result]
+        except json.JSONDecodeError:
+            result = []
+            stdout_clean = stdout.strip()
+            if stdout_clean:
+                result = [{"UserPrincipalName": "N/A", "GroupName": "Raw Output", "Status": stdout_clean}]
+
+        if result:
+            html_result = ""
+            for r in result:
+                upn = r.get("UserPrincipalName", "N/A")
+                group = r.get("GroupName", "N/A")
+                status = r.get("Status", "")
+                color = "black"
+                if "✅" in status:
+                    color = "green"
+                elif "❌" in status:
+                    color = "red"
+                elif "⚠️" in status:
+                    color = "orange"
+                html_result += f"<b>{upn}</b>: {group} → <span style='color:{color};'>{status}</span><br>"
+        else:
+            html_result = "<i>No valid output received from PowerShell.</i>"
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Assignment Results")
+        dialog.setMinimumSize(550, 450)
+
+        layout = QVBoxLayout(dialog)
+
+        results_view = QTextEdit()
+        results_view.setReadOnly(True)
+        results_view.setHtml(html_result)
+        layout.addWidget(results_view)
+
+        btn_copy = QPushButton("Copy to Clipboard")
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(stdout.strip()))
+        layout.addWidget(btn_copy)
+
+        dialog.exec()
 
     def confirm_disable_users(self):
         # Collect selected UPN(s) from your identity table
@@ -1703,6 +1942,150 @@ class OffboardManager(QWidget):
             # Pass the UPN list into disable_selected_user
             self.disable_selected_user(upns)
 
+    def confirm_assign_groups(self):
+        """Open dialog to assign selected users to one or more groups."""
+
+        # --- Collect selected UPNs from Identity Table ---
+        selected_items = self.identity_table.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        upns = list({
+            self.identity_table.item(i.row(), 4).text().strip()
+            for i in selected_items
+            if self.identity_table.item(i.row(), 4)
+        })
+
+        if not upns:
+            QMessageBox.warning(self, "No UPNs", "No valid UPNs found in the selection.")
+            return
+
+        # --- Retrieve current Groups CSV path from app ---
+        groups_path = getattr(self, "current_groups_csv_path", None)
+        if not groups_path or not os.path.exists(groups_path):
+            # fallback to Database_Groups
+            groups_dir = os.path.join(os.path.dirname(__file__), "Database_Groups")
+            csv_files = [f for f in os.listdir(groups_dir) if f.lower().endswith(".csv")]
+            if not csv_files:
+                QMessageBox.critical(self, "Missing CSV", "No CSV found in Database_Groups folder.")
+                return
+            groups_path = os.path.join(groups_dir,
+                                       max(csv_files, key=lambda f: os.path.getmtime(os.path.join(groups_dir, f))))
+
+        # --- Load the Groups CSV ---
+        import pandas as pd
+        try:
+            df = pd.read_csv(groups_path, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read Groups CSV:\n{e}")
+            return
+
+        # --- Column normalization ---
+        df.columns = [c.strip().lower() for c in df.columns]
+        id_col = next((c for c in df.columns if "object" in c and "id" in c), None)
+        name_col = next((c for c in df.columns if "display" in c and "name" in c), None)
+        type_col = next((c for c in df.columns if "type" in c), None)
+
+        if not id_col or not name_col:
+            QMessageBox.critical(self, "Invalid CSV",
+                                 "The Groups CSV must include 'Object ID' and 'Display Name' columns.")
+            return
+
+        # --- Filter out Dynamic groups ---
+        if type_col:
+            df = df[~df[type_col].str.lower().str.contains("dynamic", na=False)]
+
+        if df.empty:
+            QMessageBox.information(self, "No Groups", "No assignable (non-dynamic) groups found.")
+            return
+
+        # --- Build Dialog UI ---
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Assign Groups")
+        dialog.setMinimumSize(700, 500)
+        main_layout = QVBoxLayout(dialog)
+
+        split_layout = QHBoxLayout()
+        main_layout.addLayout(split_layout)
+
+        # Left column: users
+        users_box = QGroupBox("Selected User(s)")
+        users_layout = QVBoxLayout(users_box)
+        users_text = QTextEdit()
+        users_text.setPlainText("\n".join(upns))
+        users_text.setReadOnly(True)
+        users_layout.addWidget(users_text)
+        split_layout.addWidget(users_box, 1)
+
+        # Right column: groups with search
+        groups_box = QGroupBox("Available Groups")
+        groups_layout = QVBoxLayout(groups_box)
+
+        search_bar = QLineEdit()
+        search_bar.setPlaceholderText("Search groups...")
+        groups_layout.addWidget(search_bar)
+
+        list_widget = QListWidget()
+        for _, row in df.iterrows():
+            display_name = row[name_col]
+            group_id = row[id_col]
+            item = QListWidgetItem(f"{display_name}  ({group_id})")
+            item.setCheckState(Qt.CheckState.Unchecked)
+            list_widget.addItem(item)
+        groups_layout.addWidget(list_widget)
+        split_layout.addWidget(groups_box, 2)
+
+        def filter_groups(text):
+            text = text.lower()
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                item.setHidden(text not in item.text().lower())
+
+        search_bar.textChanged.connect(filter_groups)
+
+        # Buttons
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        main_layout.addWidget(btn_box)
+        btn_box.accepted.connect(dialog.accept)
+        btn_box.rejected.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # Collect selected groups
+        selected_groups = [
+            list_widget.item(i).text() for i in range(list_widget.count())
+            if list_widget.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups", "Please select at least one group.")
+            return
+
+        # Extract group IDs
+        group_ids = []
+        for entry in selected_groups:
+            if "(" in entry and ")" in entry:
+                gid = entry.split("(")[-1].replace(")", "").strip()
+                if gid and gid != "N/A":
+                    group_ids.append(gid)
+
+        if not group_ids:
+            QMessageBox.warning(self, "No IDs", "Could not extract valid group IDs.")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Assignment",
+            f"Assign {len(upns)} user(s) to {len(group_ids)} group(s)?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+        )
+        if confirm != QMessageBox.StandardButton.Ok:
+            return
+
+        # Call PowerShell
+        self.assign_users_to_groups(upns, group_ids)
+
     def on_script_finished(self, msg):
         # self.refresh_csv_lists()
         QMessageBox.information(self, "Success", msg)
@@ -1731,7 +2114,7 @@ class OffboardManager(QWidget):
     def refresh_csv_lists(self, target=None):
         """
         Refresh CSV combo boxes and dashboards.
-        If `target` is one of ["identity", "devices", "apps"], refresh only that.
+        If `target` is one of ["identity", "devices", "apps", "groups"], refresh only that.
         """
         base_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -1740,6 +2123,7 @@ class OffboardManager(QWidget):
             "Database_Identity",
             "Database_Devices",
             "Database_Apps",
+            "Database_Groups",
             "Powershell_Logs",
             "JSONs",
             "Random_Users",
@@ -1761,6 +2145,11 @@ class OffboardManager(QWidget):
         apps_dir = os.path.join(base_dir, "Database_Apps")
         apps_csvs = glob.glob(os.path.join(apps_dir, "*_EntraApps.csv"))
         apps_csvs.sort(key=os.path.getmtime, reverse=True)
+
+        # Groups CSVs
+        groups_dir = os.path.join(base_dir, "Database_Groups")
+        groups_csvs = glob.glob(os.path.join(groups_dir, "*_EntraGroups.csv"))
+        groups_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # --- selective refresh logic ---
         if target in [None, "identity"]:
@@ -1793,6 +2182,15 @@ class OffboardManager(QWidget):
                     self.apps_dash_selector.addItem(f)
                 self.apps_dash_selector.setCurrentIndex(0)
 
+        if target in [None, "groups"]:
+            self.groups_dash_selector.clear()
+            if not groups_csvs:
+                self.groups_dash_selector.addItem("No CSV found")
+            else:
+                for f in groups_csvs:
+                    self.groups_dash_selector.addItem(f)
+                self.groups_dash_selector.setCurrentIndex(0)
+
     def handle_tab_click(self, index):
         """Handle clicks on dashboard tabs including the Refresh pseudo-tab."""
         tab_count = self.dashboard_tabs.count()
@@ -1813,6 +2211,9 @@ class OffboardManager(QWidget):
             self.refresh_csv_lists("devices")
         elif idx == 2:
             self.refresh_csv_lists("apps")
+        elif idx == 3:
+            self.refresh_csv_lists("groups")
+
 
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
@@ -1890,6 +2291,35 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
 
+    def load_selected_groups_csv(self):
+        """Load the selected Groups CSV and display it in the table."""
+        path = self.groups_csv_selector.currentText()
+        if not path.endswith(".csv"):
+            return
+
+        try:
+            # Auto-detect delimiter
+            import csv
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+
+            # Store dataframe for filtering/search
+            self.current_groups_df = df.copy()
+
+            # Show full table
+            self.display_groups_dataframe(self.current_groups_df)
+
+            # Apply existing search if any
+            if self.groups_search.text().strip():
+                self.filter_groups_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
+
     def display_apps_dataframe(self, df: pd.DataFrame):
         """Render a pandas DataFrame into the apps_table widget."""
         self.apps_table.clear()
@@ -1912,6 +2342,29 @@ class OffboardManager(QWidget):
                 self.apps_table.setItem(r, c, item)
 
         self.apps_table.resizeColumnsToContents()
+
+    def display_groups_dataframe(self, df: pd.DataFrame):
+        """Render a pandas DataFrame into the apps_table widget."""
+        self.groups_table.clear()
+
+        if df is None or df.empty:
+            self.groups_table.setRowCount(0)
+            self.groups_table.setColumnCount(0)
+            return
+
+        # Set up headers
+        self.groups_table.setRowCount(len(df))
+        self.groups_table.setColumnCount(len(df.columns))
+        self.groups_table.setHorizontalHeaderLabels(df.columns.tolist())
+
+        # Fill data
+        for r, row in enumerate(df.itertuples(index=False)):
+            for c, value in enumerate(row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # make read-only
+                self.groups_table.setItem(r, c, item)
+
+        self.groups_table.resizeColumnsToContents()
 
     def update_devices_dashboard_from_csv(self, combo, layout):
         # 1) Clear existing widgets
@@ -2270,6 +2723,159 @@ class OffboardManager(QWidget):
             except Exception:
                 pass
 
+    def update_groups_dashboard_from_csv(self, combo, layout):
+        """
+        Build the Groups dashboard from the selected CSV file.
+        Displays metrics for group types, ownership, CA policies, and more.
+        """
+        if getattr(self, "_groups_dash_refreshing", False):
+            return
+        self._groups_dash_refreshing = True
+
+        try:
+            if combo is None or layout is None:
+                return
+
+            from PyQt6.QtCore import QSignalBlocker
+            _blocker = QSignalBlocker(combo)
+
+            # ---- clear layout ----
+            for i in reversed(range(layout.count())):
+                item = layout.itemAt(i)
+                if item and item.widget():
+                    w = item.widget()
+                    layout.removeWidget(w)
+                    w.deleteLater()
+
+            # ---- load CSV ----
+            path = combo.currentText()
+            if not path or not path.endswith(".csv") or not os.path.exists(path):
+                layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+                return
+
+            import csv
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    sample = f.read(2048)
+                    try:
+                        delimiter = csv.Sniffer().sniff(sample).delimiter
+                    except Exception:
+                        delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+                df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            except Exception as e:
+                layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+                return
+
+            total = len(df)
+            if total == 0:
+                layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+                return
+
+            # ---- helper ----
+            def s(col):
+                return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+            # ---- metrics ----
+            total_groups = total
+            mail_enabled = (s("Mail Enabled").str.lower() == "true").sum()
+            teams_enabled = (s("Is Teams Team").str.lower() == "true").sum()
+            dynamic_groups = (s("Membership Type").str.lower().str.contains("dynamic")).sum()
+            assigned_owners = s("Assigned Owners").replace("", pd.NA).dropna().count()
+            nested_groups = (s("Nested Groups").astype(str) != "0").sum()
+            role_assigned = s("Assigned Roles").replace("", pd.NA).dropna().count()
+
+            ca_include = s("Referenced In CA Policy Include").replace("", pd.NA).dropna().count()
+            ca_exclude = s("Referenced In CA Policy Exclude").replace("", pd.NA).dropna().count()
+
+            # ---- card factory ----
+            def make_card(title, value, color="#2c3e50", icon=None, subtitle=""):
+                card = QFrame()
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
+                        border-radius: 12px; padding: 16px;
+                    }}
+                    QLabel {{ color: white; background: transparent; }}
+                """)
+                v = QVBoxLayout(card)
+                t = QLabel(title)
+                t.setStyleSheet("font-size:14px; font-weight:bold;")
+                v.addWidget(t)
+                val_lbl = QLabel(str(value))
+                val_lbl.setStyleSheet("font-size:28px; font-weight:bold;")
+                v.addWidget(val_lbl)
+                if subtitle:
+                    s_lbl = QLabel(subtitle)
+                    s_lbl.setStyleSheet("font-size:12px; color:#bdc3c7;")
+                    v.addWidget(s_lbl)
+                return card
+
+            cards = [
+                ("Total Groups", total_groups, "#34495e", "📦"),
+                ("Mail-enabled", mail_enabled, "#2980b9", "📧"),
+                ("Teams-enabled", teams_enabled, "#9b59b6", "💬"),
+                ("Dynamic Groups", dynamic_groups, "#16a085", "⚙️"),
+                ("With Owners", assigned_owners, "#27ae60", "👤"),
+                ("Nested Groups", nested_groups, "#d35400", "🧩"),
+                ("Role-assigned", role_assigned, "#8e44ad", "🔐"),
+                ("CA Include", ca_include, "#3498db", "🛡️"),
+                ("CA Exclude", ca_exclude, "#e67e22", "🚫"),
+            ]
+
+            cols = 3
+            r = c = 0
+            for title, val, col_hex, icon in cards:
+                layout.addWidget(make_card(title, val, col_hex, icon), r, c)
+                c += 1
+                if c == cols:
+                    r += 1
+                    c = 0
+
+            # ---- Top tables ----
+            def make_top_table(title, series, n=10):
+                vc = series[series.str.strip().ne("")].value_counts().head(n)
+                frame = QFrame()
+                frame.setStyleSheet("""
+                    QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                    QLabel { color: white; }
+                    QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                    QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+                """)
+                v = QVBoxLayout(frame)
+                t = QLabel(title)
+                t.setStyleSheet("font-size:14px; font-weight:bold;")
+                v.addWidget(t)
+                tbl = QTableWidget()
+                tbl.setRowCount(len(vc))
+                tbl.setColumnCount(2)
+                tbl.setHorizontalHeaderLabels(["Value", "Count"])
+                tbl.verticalHeader().setVisible(False)
+                hdr = tbl.horizontalHeader()
+                hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+                hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+                for i, (k, cnt) in enumerate(vc.items()):
+                    tbl.setItem(i, 0, QTableWidgetItem(str(k)))
+                    tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
+                v.addWidget(tbl)
+                return frame
+
+            layout.addWidget(make_top_table("Top Group Types", s("Group Type")), r, 0)
+            layout.addWidget(make_top_table("Top Roles", s("Assigned Roles")), r, 1)
+            layout.addWidget(make_top_table("Top Owners", s("Assigned Owners")), r, 2)
+
+        except Exception as e:
+            print(f"❌ update_groups_dashboard_from_csv error: {e}")
+            try:
+                layout.addWidget(QLabel(f"Failed to render: {e}"), 0, 0)
+            except Exception:
+                pass
+        finally:
+            self._groups_dash_refreshing = False
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
+
     def display_dataframe(self, df: pd.DataFrame):
         self.identity_table.setRowCount(0)
         self.identity_table.setColumnCount(len(df.columns))
@@ -2431,6 +3037,24 @@ class OffboardManager(QWidget):
             filtered = df[mask]
 
         self.display_apps_dataframe(filtered)
+
+    def filter_groups_table(self):
+        """Filter apps table by GrpDisplayName or UserDisplayName (contains search)."""
+        if not hasattr(self, "current_groups_df"):
+            return
+
+        query = self.groups_search.text().strip().lower()
+        if not query:
+            filtered = self.current_groups_df
+        else:
+            df = self.current_groups_df
+            mask = (
+                    df.get("Display Name", pd.Series([""] * len(df))).str.lower().str.contains(query) |
+                    df.get("Group Type", pd.Series([""] * len(df))).str.lower().str.contains(query)
+            )
+            filtered = df[mask]
+
+        self.display_groups_dataframe(filtered)
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()
@@ -3151,6 +3775,20 @@ class OffboardManager(QWidget):
             self.apps_csv_selector.setCurrentIndex(0)
             self.load_selected_apps_csv()
 
+    def try_populate_groups_csv(self):
+        """Populate the groups_csv_selector with files from Database_Groups"""
+        folder = os.path.join(os.path.dirname(__file__), "Database_Groups")
+        self.groups_csv_selector.clear()
+        if os.path.exists(folder):
+            files = [f for f in os.listdir(folder) if f.endswith("_EntraGroups.csv")]
+            for f in sorted(files, reverse=True):
+                self.groups_csv_selector.addItem(os.path.join(folder, f))
+
+        # Auto-load the most recent CSV if available
+        if self.groups_csv_selector.count() > 0:
+            self.groups_csv_selector.setCurrentIndex(0)
+            self.load_selected_groups_csv()
+
     def set_default_path(self):
         """Let user select a default CSV directory (e.g. SharePoint sync folder)."""
         folder = QFileDialog.getExistingDirectory(self, "Select Default CSV Directory")
@@ -3236,12 +3874,16 @@ class OffboardManager(QWidget):
             # 🧩 Special case: Access Package values from JSON
             json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "JSONs", "AccessPackages.json"))
             if os.path.exists(json_path):
-                import json
                 with open(json_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    ap_names = sorted({ap["AccessPackageName"] for ap in data if ap.get("AccessPackageName")})
-                    if ap_names:
-                        safe_set("field_accesspackage", None, ap_names)
+
+                    # Preserve order (first blank, then others)
+                    ap_names = [ap["AccessPackageName"] for ap in data if "AccessPackageName" in ap]
+
+                    if ap_names and ap_names[0] != "":
+                        ap_names.insert(0, "")  # fallback safety in case file has no blank
+
+                    safe_set("field_accesspackage", None, ap_names)
             else:
                 print(f"⚠️ AccessPackages.json not found at {json_path}")
 
@@ -3604,6 +4246,58 @@ class OffboardManager(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"App filtering failed:\n{e}")
+
+    def show_filtered_groups(self, mode, value=None):
+        """Switch to Groups tab and show filtered groups based on dashboard click."""
+        self.show_named_page("groups")
+
+        if not hasattr(self, "current_groups_df") or self.current_groups_df is None:
+            return
+
+        df = self.current_groups_df.copy()
+
+        try:
+            if mode == "ALL":
+                filtered = df
+
+            elif mode == "MAIL_ENABLED":
+                filtered = df[df["Mail Enabled"].str.lower() == "true"]
+
+            elif mode == "TEAMS_ENABLED":
+                filtered = df[df["Is Teams Team"].str.lower() == "true"]
+
+            elif mode == "DYNAMIC":
+                filtered = df[df["Membership Type"].str.lower().str.contains("dynamic", na=False)]
+
+            elif mode == "WITH_OWNERS":
+                filtered = df[df["Assigned Owners"].astype(str).str.strip() != ""]
+
+            elif mode == "NESTED":
+                filtered = df[df["Nested Groups"].astype(str) != "0"]
+
+            elif mode == "ROLE_ASSIGNED":
+                filtered = df[df["Assigned Roles"].astype(str).str.strip() != ""]
+
+            elif mode == "CA_INCLUDE":
+                filtered = df[df["Referenced In CA Policy Include"].astype(str).str.strip() != ""]
+
+            elif mode == "CA_EXCLUDE":
+                filtered = df[df["Referenced In CA Policy Exclude"].astype(str).str.strip() != ""]
+
+            elif mode == "GROUP_TYPE":
+                if value:
+                    filtered = df[df["Group Type"].astype(str).str.lower() == value.lower()]
+                else:
+                    filtered = df[df["Group Type"].astype(str).str.strip() == ""]
+
+            else:
+                return
+
+            # Display filtered data in your main table
+            self.display_groups_dataframe(filtered)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Group filtering failed:\n{e}")
 
     def reload_app(self):
         """Restart the entire application."""

@@ -99,7 +99,30 @@ if (-not (Test-Path $dir)) {
     New-Item -Path $dir -ItemType Directory -Force | Out-Null
 }
 
-Write-Host "💾 Saving results to: $OutputPath" -ForegroundColor Cyan
-$result | ConvertTo-Json -Depth 6 | Out-File -Encoding UTF8 -FilePath $OutputPath
+Write-Host "💾 Preparing JSON export..." -ForegroundColor Cyan
 
-Write-Host "✅ Done! Exported $($result.Count) Access Packages with their policies." -ForegroundColor Green
+# --- Add a blank placeholder entry at the top ---
+$placeholder = [PSCustomObject]@{
+    AccessPackageName = ""
+    AccessPackageId   = ""
+    Description       = ""
+    CatalogId         = ""
+    CreatedDateTime   = ""
+    ModifiedDateTime  = ""
+    Policies          = @()
+}
+
+# --- Combine placeholder + actual data ---
+$finalList = @($placeholder) + $result
+
+# --- Ensure output folder exists ---
+$dir = Split-Path $OutputPath
+if (-not (Test-Path $dir)) {
+    New-Item -Path $dir -ItemType Directory -Force | Out-Null
+}
+
+# --- Save JSON ---
+Write-Host "💾 Saving results to: $OutputPath" -ForegroundColor Cyan
+$finalList | ConvertTo-Json -Depth 6 | Out-File -Encoding UTF8 -FilePath $OutputPath
+
+Write-Host "✅ Done! Exported $($result.Count) Access Packages (+ placeholder) with their policies." -ForegroundColor Green

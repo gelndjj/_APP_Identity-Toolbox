@@ -1,8 +1,20 @@
 param(
     [string]$SourceUserUPN,
     [string]$TargetUserUPN,
-    [string[]]$GroupsToAssign
+    [string]$GroupsJson  # 👈 JSON string input
 )
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+try {
+    $GroupsToAssign = $GroupsJson | ConvertFrom-Json
+    if (-not $GroupsToAssign) { throw "No groups found in JSON input." }
+}
+catch {
+    Write-Host "❌ Failed to parse GroupsJson: $GroupsJson"
+    exit 1
+}
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -60,9 +72,13 @@ catch {
     $result += [PSCustomObject]@{ GroupName = "N/A"; Status = "❌ Script failed: $($_.Exception.Message)" }
 }
 
-if (-not $result) {
-    $result = @([PSCustomObject]@{ GroupName = "None"; Status = "No groups processed" })
+if (-not $result -or $result.Count -eq 0) {
+    $result = @([PSCustomObject]@{
+        GroupName = "None"
+        Status    = "No groups processed"
+    })
 }
 
+# Output proper JSON
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Write-Output ($result | ConvertTo-Json -Depth 5 -Compress)
+$result | ConvertTo-Json -Depth 5 -Compress

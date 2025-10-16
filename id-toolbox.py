@@ -262,6 +262,7 @@ class GroupsWorker(QThread):
         stdout, stderr = process.communicate()
         self.result_ready.emit(stdout, stderr)
 
+# --- Main Dialog ---
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
         super().__init__(parent)
@@ -587,6 +588,171 @@ class AssignGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
+class AssignAccessPackagesWorker(QThread):
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        import subprocess
+        try:
+            process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            stdout, stderr = process.communicate()
+
+            if stderr.strip():
+                self.error.emit(stderr.strip())
+                return
+
+            self.finished.emit(stdout)
+        except Exception as e:
+            self.error.emit(str(e))
+
+class AssignAccessPackagesDialog(QDialog):
+    def __init__(self, parent=None, user_upn=None, json_path=None):
+        super().__init__(parent)
+        self.user_upn = user_upn
+        self.json_path = json_path
+
+        self.setWindowTitle(f"Assign Access Packages to {user_upn}")
+        self.setMinimumWidth(700)
+        layout = QVBoxLayout(self)
+
+        info = QLabel(f"Select Access Packages to assign to <b>{user_upn}</b>:")
+        layout.addWidget(info)
+
+        # --- Load Access Packages from JSON file
+        try:
+            with open(self.json_path, "r", encoding="utf-8") as f:
+                packages = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load JSON:\n{e}")
+            self.close()
+            return
+
+        # --- Table setup
+        self.table = QTableWidget(len(packages), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Access Package"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 80)
+
+        for i, pkg in enumerate(packages):
+            chk_item = QTableWidgetItem()
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, chk_item)
+            name = pkg.get("AccessPackageName") or "Unnamed"
+            self.table.setItem(i, 1, QTableWidgetItem(name))
+
+        layout.addWidget(self.table)
+
+        # --- Buttons
+        self.assign_btn = QPushButton("Assign Selected Access Packages")
+        self.assign_btn.clicked.connect(self.start_assignment)
+        layout.addWidget(self.assign_btn)
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.close)
+        layout.addWidget(self.close_btn)
+
+    # --------------------------------------------------------------------------
+    # Run PowerShell asynchronously (non-blocking)
+    # --------------------------------------------------------------------------
+    def start_assignment(self):
+        selected_packages = [
+            self.table.item(i, 1).text()
+            for i in range(self.table.rowCount())
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected_packages:
+            QMessageBox.warning(self, "No Selection", "Please select at least one Access Package.")
+            return
+
+        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "assign_access_packages.ps1")
+        # Read the full JSON to get both Name + ID
+        with open(self.json_path, "r", encoding="utf-8") as f:
+            all_packages = json.load(f)
+
+        selected_full = [pkg for pkg in all_packages if pkg["AccessPackageName"] in selected_packages]
+        json_data = json.dumps(selected_full)
+
+        command = [
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-UserUPN", self.user_upn,
+            "-AccessPackagesJson", json_data
+        ]
+
+        # Disable button and show progress text
+        self.assign_btn.setEnabled(False)
+        self.assign_btn.setText("⏳ Assigning...")
+
+        # Run PowerShell asynchronously
+        self.worker = AssignAccessPackagesWorker(command)
+        self.worker.finished.connect(self.on_assignment_done)
+        self.worker.error.connect(self.on_assignment_error)
+        self.worker.start()
+
+    # --------------------------------------------------------------------------
+    # Handle completion (display formatted results)
+    # --------------------------------------------------------------------------
+    def on_assignment_done(self, stdout):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Access Packages")
+
+        try:
+            result = json.loads(stdout)
+            if isinstance(result, dict):
+                result = [result]
+        except Exception:
+            result = [{"AccessPackageName": "N/A", "Status": stdout.strip()}]
+
+        # --- Build HTML output
+        html_result = ""
+        for r in result:
+            name = r.get("AccessPackageName", "N/A")
+            status = r.get("Status", "")
+            color = "black"
+            if "✅" in status:
+                color = "green"
+            elif "⚠️" in status:
+                color = "orange"
+            elif "❌" in status:
+                color = "red"
+            html_result += f"<b>{name}</b> → <span style='color:{color};'>{status}</span><br>"
+
+        # --- Display results in a dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Assignment Results")
+        dialog.setMinimumSize(550, 400)
+        layout = QVBoxLayout(dialog)
+
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setHtml(html_result)
+        layout.addWidget(view)
+
+        btn_copy = QPushButton("Copy to Clipboard")
+        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(stdout.strip()))
+        layout.addWidget(btn_copy)
+
+        dialog.exec()
+
+    # --------------------------------------------------------------------------
+    # Handle errors
+    # --------------------------------------------------------------------------
+    def on_assignment_error(self, err):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Access Packages")
+        QMessageBox.critical(self, "Error", f"Assignment failed:\n\n{err}")
 
 class OffboardManager(QWidget):
     def __init__(self):
@@ -1817,6 +1983,10 @@ class OffboardManager(QWidget):
         assign_group_action.triggered.connect(self.confirm_assign_groups)
         menu.addAction(assign_group_action)
 
+        assign_ap_action = QAction("Assign Access Package(s)", self)
+        assign_ap_action.triggered.connect(self.confirm_assign_access_packages)
+        menu.addAction(assign_ap_action)
+
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
     def open_groups_comparison_window(self):
@@ -2085,6 +2255,26 @@ class OffboardManager(QWidget):
 
         # Call PowerShell
         self.assign_users_to_groups(upns, group_ids)
+
+    def confirm_assign_access_packages(self):
+        selected_rows = self.identity_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # 👇 Set this to the actual column index for the UPN in your table
+        upn_col = 4
+
+        for row in selected_rows:
+            item = self.identity_table.item(row.row(), upn_col)
+            if not item:
+                continue
+            user_upn = item.text().strip()
+
+            json_path = os.path.join(os.path.dirname(__file__), "JSONs", "AccessPackages.json")
+
+            dialog = AssignAccessPackagesDialog(self, user_upn=user_upn, json_path=json_path)
+            dialog.exec()
 
     def on_script_finished(self, msg):
         # self.refresh_csv_lists()

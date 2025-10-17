@@ -2831,516 +2831,6 @@ class OffboardManager(QWidget):
 
         self.groups_table.resizeColumnsToContents()
 
-    def update_devices_dashboard_from_csv(self, combo, layout):
-        # 1) Clear existing widgets
-        for i in reversed(range(layout.count())):
-            item = layout.itemAt(i)
-            if item:
-                widget = item.widget()
-                if widget is not None:
-                    layout.removeWidget(widget)
-                    widget.deleteLater()
-
-        # 2) Load CSV
-        path = combo.currentText()
-        if not path.endswith(".csv"):
-            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
-            return
-
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                sample = f.read(2048)
-                sniffer = csv.Sniffer()
-                delimiter = sniffer.sniff(sample).delimiter
-
-            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
-        except Exception as e:
-            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
-            return
-
-        total = len(df)
-        if total == 0:
-            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
-            return
-
-        # -------- Helpers --------
-        def s(name: str) -> pd.Series:
-            if name in df.columns:
-                return df[name].astype(str).fillna("")
-            return pd.Series([""] * total, dtype=str)
-
-        def b(name: str) -> pd.Series:
-            return s(name).str.lower().eq("true")
-
-        # -------- Metrics --------
-        compliant = (s("ComplianceState").str.lower() == "compliant").sum()
-        non_compliant = total - compliant
-        encrypted = b("IsEncrypted").sum()
-        unencrypted = total - encrypted
-        autopilot = b("AutopilotEnrolled").sum()
-
-        windows = s("OperatingSystem").str.contains("Windows", case=False).sum()
-        macos = s("OperatingSystem").str.contains("Mac", case=False).sum()
-        ios = s("OperatingSystem").str.contains("iOS", case=False).sum()
-        android = s("OperatingSystem").str.contains("Android", case=False).sum()
-
-        last_sync = pd.to_datetime(s("LastSyncDateTime"), errors="coerce", utc=True)
-        stale = int(((pd.Timestamp.utcnow() - last_sync) > pd.Timedelta(days=30)).fillna(False).sum())
-
-        # -------- Card factory (with on_click) --------
-        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
-            card = QFrame()
-            card.setStyleSheet(f"""
-                QFrame {{
-                    background: qlineargradient(
-                        x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {color}, stop:1 #1a1a1a
-                    );
-                    border-radius: 12px;
-                    padding: 16px;
-                }}
-                QFrame:hover {{
-                    background: qlineargradient(
-                        x1:0, y1:0, x2:1, y2:1,
-                        stop:0 {color}, stop:1 #333333
-                    );
-                }}
-                QLabel {{
-                    color: white;
-                    background: transparent;
-                }}
-            """)
-
-            shadow = QGraphicsDropShadowEffect()
-            shadow.setBlurRadius(25)
-            shadow.setOffset(0, 4)
-            shadow.setColor(QColor(0, 0, 0, 160))
-            card.setGraphicsEffect(shadow)
-
-            vbox = QVBoxLayout(card)
-
-            # Title row
-            title_row = QHBoxLayout()
-            if icon:
-                icon_lbl = QLabel(icon)
-                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
-                title_row.addWidget(icon_lbl)
-            title_lbl = QLabel(title)
-            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
-            title_row.addWidget(title_lbl)
-            title_row.addStretch()
-            vbox.addLayout(title_row)
-
-            # Value
-            value_lbl = QLabel(str(value))
-            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
-            vbox.addWidget(value_lbl)
-
-            if subtitle:
-                sub_lbl = QLabel(subtitle)
-                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
-                vbox.addWidget(sub_lbl)
-
-            # 🔹 Make clickable
-            if on_click:
-                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-                card.mousePressEvent = lambda event: on_click()
-
-            return card
-
-        # -------- Add device cards --------
-        cards = [
-            ("Devices Total", total, "#34495e", "💻", "All devices",
-             lambda: self.show_filtered_devices("Id", "")),  # show all
-            ("Compliant", compliant, "#27ae60", "✅", "ComplianceState = compliant",
-             lambda: self.show_filtered_devices("ComplianceState", "compliant")),
-            ("Non-Compliant", non_compliant, "#c0392b", "❌", "Other states",
-             lambda: self.show_filtered_devices("ComplianceState", "noncompliant")),
-            ("Encrypted", encrypted, "#16a085", "🔒", "BitLocker/FileVault on",
-             lambda: self.show_filtered_devices("IsEncrypted", "True")),
-            ("Unencrypted", unencrypted, "#d35400", "🔓", "No encryption",
-             lambda: self.show_filtered_devices("IsEncrypted", "False")),
-            ("Autopilot Enrolled", autopilot, "#2980b9", "🚀", "Devices in Autopilot",
-             lambda: self.show_filtered_devices("AutopilotEnrolled", "True")),
-            ("Windows", windows, "#3498db", "🪟", "OS breakdown",
-             lambda: self.show_filtered_devices("OperatingSystem", "Windows")),
-            ("macOS", macos, "#9b59b6", "🍎", "OS breakdown",
-             lambda: self.show_filtered_devices("OperatingSystem", "Mac")),
-            ("iOS", ios, "#e67e22", "📱", "OS breakdown",
-             lambda: self.show_filtered_devices("OperatingSystem", "iOS")),
-            ("Android", android, "#27ae60", "🤖", "OS breakdown",
-             lambda: self.show_filtered_devices("OperatingSystem", "Android")),
-            ("Stale >30d", stale, "#7f8c8d", "⏳", "Last sync older than 30 days",
-             lambda: self.show_filtered_devices("LastSyncDateTime", "stale")),
-        ]
-
-        cols = 3
-        r = c = 0
-        for title, val, col_hex, icon, sub, on_click in cards:
-            card = make_card(title, val, col_hex, icon, sub, on_click=on_click)
-            layout.addWidget(card, r, c)
-            c += 1
-            if c == cols:
-                r += 1
-                c = 0
-
-    def update_apps_dashboard_from_csv(self, combo, layout):
-        """
-        Safely rebuild the Apps dashboard from the selected CSV.
-
-        This version prevents re-entrancy and blocks signals while we clear/rebuild
-        the grid to avoid crashes when the function is triggered from a refresh.
-        """
-        # ---- reentrancy guard ----
-        if getattr(self, "_apps_dash_refreshing", False):
-            # Already running; ignore this re-entry safely.
-            return
-        self._apps_dash_refreshing = True
-
-        try:
-            if combo is None or layout is None:
-                return
-
-            # Block signals from the selector while we work
-            from PyQt6.QtCore import QSignalBlocker
-            _blocker = QSignalBlocker(combo)
-
-            # ---- clear old widgets safely ----
-            # (deleteLater is fine; they’re not parents of the combo)
-            for i in reversed(range(layout.count())):
-                item = layout.itemAt(i)
-                if item and item.widget():
-                    w = item.widget()
-                    layout.removeWidget(w)
-                    w.deleteLater()
-
-            # ---- read file path ----
-            path = combo.currentText()
-            if not path or not path.endswith(".csv") or not os.path.exists(path):
-                layout.addWidget(QLabel("No CSV loaded"), 0, 0)
-                return
-
-            # ---- auto-detect delimiter (robust) ----
-            import csv
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    sample = f.read(2048)
-                    try:
-                        delimiter = csv.Sniffer().sniff(sample).delimiter
-                    except Exception:
-                        # fallback: common separators
-                        delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
-                df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
-            except Exception as e:
-                layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
-                return
-
-            total = len(df)
-            if total == 0:
-                layout.addWidget(QLabel("No data in this CSV"), 0, 0)
-                return
-
-            # ---- helpers ----
-            def s(col):
-                return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
-
-            # ---- metrics (unchanged) ----
-            installs = total
-            unique_apps = s("AppDisplayName").replace("", pd.NA).dropna().nunique()
-            unique_devices = s("DeviceName").replace("", pd.NA).dropna().nunique()
-            unique_users = s("UserPrincipalName").replace("", pd.NA).dropna().nunique()
-
-            platform_series = s("Platform").str.lower()
-            win_count = (platform_series == "windows").sum()
-            mac_count = (platform_series == "macos").sum()
-            ios_count = (platform_series == "ios").sum()
-            android_count = (platform_series == "android").sum()
-            other_platform = total - (win_count + mac_count + ios_count + android_count)
-
-            publisher_empty = s("Publisher").str.strip().eq("").sum()
-
-            # ---- card factory (unchanged) ----
-            def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
-                card = QFrame()
-                card.setStyleSheet(f"""
-                    QFrame {{
-                        background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
-                        border-radius: 12px; padding: 16px;
-                    }}
-                    QFrame:hover {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333); }}
-                    QLabel {{ color: white; background: transparent; }}
-                """)
-                shadow = QGraphicsDropShadowEffect()
-                shadow.setBlurRadius(25);
-                shadow.setOffset(0, 4);
-                shadow.setColor(QColor(0, 0, 0, 160))
-                card.setGraphicsEffect(shadow)
-
-                v = QVBoxLayout(card)
-                row = QHBoxLayout()
-                if icon:
-                    il = QLabel(icon);
-                    il.setStyleSheet("font-size:20px; margin-right:8px;")
-                    row.addWidget(il)
-                tl = QLabel(title);
-                tl.setStyleSheet("font-size:14px; font-weight:bold;")
-                row.addWidget(tl);
-                row.addStretch();
-                v.addLayout(row)
-
-                vl = QLabel(str(value))
-                vl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
-                v.addWidget(vl)
-
-                if subtitle:
-                    sl = QLabel(subtitle);
-                    sl.setStyleSheet("font-size:12px; color:#bdc3c7;")
-                    v.addWidget(sl)
-
-                if on_click:
-                    card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
-                    card.mousePressEvent = lambda e: on_click()
-                return card
-
-            cards = [
-                ("Installations", installs, "#34495e", "📦", "All rows", lambda: self.show_filtered_apps("ALL")),
-                ("Unique Apps", unique_apps, "#2c3e50", "🧩", "Distinct AppDisplayName",
-                 lambda: self.show_filtered_apps("DEDUP_APPS")),
-                ("Unique Devices", unique_devices, "#2980b9", "💻", "Distinct DeviceName",
-                 lambda: self.show_filtered_apps("DEDUP_DEVICES")),
-                ("Unique Users", unique_users, "#16a085", "👤", "Distinct UserPrincipalName",
-                 lambda: self.show_filtered_apps("DEDUP_USERS")),
-
-                ("Windows", win_count, "#3498db", "🪟", "", lambda: self.show_filtered_apps("PLATFORM", "windows")),
-                ("macOS", mac_count, "#9b59b6", "🍎", "", lambda: self.show_filtered_apps("PLATFORM", "macos")),
-                ("iOS", ios_count, "#e67e22", "📱", "", lambda: self.show_filtered_apps("PLATFORM", "ios")),
-                ("Android", android_count, "#27ae60", "🤖", "", lambda: self.show_filtered_apps("PLATFORM", "android")),
-                ("Other", other_platform, "#7f8c8d", "❓", "Other platforms",
-                 lambda: self.show_filtered_apps("PLATFORM", "")),
-
-                ("Publisher missing", publisher_empty, "#d35400", "⚠️", "Publisher empty",
-                 lambda: self.show_filtered_apps("PUBLISHER_EMPTY")),
-            ]
-
-            cols = 3
-            r = c = 0
-            for title, val, col_hex, icon, sub, cb in cards:
-                layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
-                c += 1
-                if c == cols:
-                    r += 1;
-                    c = 0
-
-            # ---- small "Top ..." tables ----
-            def make_top_table(title, series: pd.Series, n=10):
-                vc = series[series.str.strip().ne("")].value_counts().head(n)
-
-                frame = QFrame()
-                frame.setStyleSheet("""
-                    QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
-                    QLabel { color: white; }
-                    QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
-                    QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
-                """)
-                v = QVBoxLayout(frame)
-                t = QLabel(title);
-                t.setStyleSheet("font-size:14px; font-weight:bold;");
-                v.addWidget(t)
-
-                tbl = QTableWidget()
-                tbl.setRowCount(len(vc));
-                tbl.setColumnCount(2)
-                tbl.setHorizontalHeaderLabels(["Value", "Count"])
-                tbl.verticalHeader().setVisible(False)
-                tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-                tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-
-                hdr = tbl.horizontalHeader()
-                hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-                hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-
-                for i, (k, cnt) in enumerate(vc.items()):
-                    tbl.setItem(i, 0, QTableWidgetItem(str(k)))
-                    tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
-
-                tbl.resizeColumnsToContents()
-                tbl.setFixedHeight(250)
-                v.addWidget(tbl)
-                return frame
-
-            layout.addWidget(make_top_table("Top Apps", s("AppDisplayName")), r, 0)
-            layout.addWidget(make_top_table("Top Publishers", s("Publisher")), r, 1)
-            layout.addWidget(make_top_table("Top Platforms", s("Platform")), r, 2)
-
-        except Exception as e:
-            # Don't kill the app; show a soft error and log to console
-            print(f"❌ update_apps_dashboard_from_csv error: {e}")
-            try:
-                layout.addWidget(QLabel(f"Failed to render: {e}"), 0, 0)
-            except Exception:
-                pass
-
-        finally:
-            # Re-enable signals and clear the guard
-            self._apps_dash_refreshing = False
-            try:
-                combo.blockSignals(False)
-            except Exception:
-                pass
-
-    def update_groups_dashboard_from_csv(self, combo, layout):
-        """
-        Build the Groups dashboard from the selected CSV file.
-        Displays metrics for group types, ownership, CA policies, and more.
-        """
-        if getattr(self, "_groups_dash_refreshing", False):
-            return
-        self._groups_dash_refreshing = True
-
-        try:
-            if combo is None or layout is None:
-                return
-
-            from PyQt6.QtCore import QSignalBlocker
-            _blocker = QSignalBlocker(combo)
-
-            # ---- clear layout ----
-            for i in reversed(range(layout.count())):
-                item = layout.itemAt(i)
-                if item and item.widget():
-                    w = item.widget()
-                    layout.removeWidget(w)
-                    w.deleteLater()
-
-            # ---- load CSV ----
-            path = combo.currentText()
-            if not path or not path.endswith(".csv") or not os.path.exists(path):
-                layout.addWidget(QLabel("No CSV loaded"), 0, 0)
-                return
-
-            import csv
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    sample = f.read(2048)
-                    try:
-                        delimiter = csv.Sniffer().sniff(sample).delimiter
-                    except Exception:
-                        delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
-                df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
-            except Exception as e:
-                layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
-                return
-
-            total = len(df)
-            if total == 0:
-                layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
-                return
-
-            # ---- helper ----
-            def s(col):
-                return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
-
-            # ---- metrics ----
-            total_groups = total
-            mail_enabled = (s("Mail Enabled").str.lower() == "true").sum()
-            teams_enabled = (s("Is Teams Team").str.lower() == "true").sum()
-            dynamic_groups = (s("Membership Type").str.lower().str.contains("dynamic")).sum()
-            assigned_owners = s("Assigned Owners").replace("", pd.NA).dropna().count()
-            nested_groups = (s("Nested Groups").astype(str) != "0").sum()
-            role_assigned = s("Assigned Roles").replace("", pd.NA).dropna().count()
-
-            ca_include = s("Referenced In CA Policy Include").replace("", pd.NA).dropna().count()
-            ca_exclude = s("Referenced In CA Policy Exclude").replace("", pd.NA).dropna().count()
-
-            # ---- card factory ----
-            def make_card(title, value, color="#2c3e50", icon=None, subtitle=""):
-                card = QFrame()
-                card.setStyleSheet(f"""
-                    QFrame {{
-                        background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
-                        border-radius: 12px; padding: 16px;
-                    }}
-                    QLabel {{ color: white; background: transparent; }}
-                """)
-                v = QVBoxLayout(card)
-                t = QLabel(title)
-                t.setStyleSheet("font-size:14px; font-weight:bold;")
-                v.addWidget(t)
-                val_lbl = QLabel(str(value))
-                val_lbl.setStyleSheet("font-size:28px; font-weight:bold;")
-                v.addWidget(val_lbl)
-                if subtitle:
-                    s_lbl = QLabel(subtitle)
-                    s_lbl.setStyleSheet("font-size:12px; color:#bdc3c7;")
-                    v.addWidget(s_lbl)
-                return card
-
-            cards = [
-                ("Total Groups", total_groups, "#34495e", "📦"),
-                ("Mail-enabled", mail_enabled, "#2980b9", "📧"),
-                ("Teams-enabled", teams_enabled, "#9b59b6", "💬"),
-                ("Dynamic Groups", dynamic_groups, "#16a085", "⚙️"),
-                ("With Owners", assigned_owners, "#27ae60", "👤"),
-                ("Nested Groups", nested_groups, "#d35400", "🧩"),
-                ("Role-assigned", role_assigned, "#8e44ad", "🔐"),
-                ("CA Include", ca_include, "#3498db", "🛡️"),
-                ("CA Exclude", ca_exclude, "#e67e22", "🚫"),
-            ]
-
-            cols = 3
-            r = c = 0
-            for title, val, col_hex, icon in cards:
-                layout.addWidget(make_card(title, val, col_hex, icon), r, c)
-                c += 1
-                if c == cols:
-                    r += 1
-                    c = 0
-
-            # ---- Top tables ----
-            def make_top_table(title, series, n=10):
-                vc = series[series.str.strip().ne("")].value_counts().head(n)
-                frame = QFrame()
-                frame.setStyleSheet("""
-                    QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
-                    QLabel { color: white; }
-                    QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
-                    QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
-                """)
-                v = QVBoxLayout(frame)
-                t = QLabel(title)
-                t.setStyleSheet("font-size:14px; font-weight:bold;")
-                v.addWidget(t)
-                tbl = QTableWidget()
-                tbl.setRowCount(len(vc))
-                tbl.setColumnCount(2)
-                tbl.setHorizontalHeaderLabels(["Value", "Count"])
-                tbl.verticalHeader().setVisible(False)
-                hdr = tbl.horizontalHeader()
-                hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-                hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-                for i, (k, cnt) in enumerate(vc.items()):
-                    tbl.setItem(i, 0, QTableWidgetItem(str(k)))
-                    tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
-                v.addWidget(tbl)
-                return frame
-
-            layout.addWidget(make_top_table("Top Group Types", s("Group Type")), r, 0)
-            layout.addWidget(make_top_table("Top Roles", s("Assigned Roles")), r, 1)
-            layout.addWidget(make_top_table("Top Owners", s("Assigned Owners")), r, 2)
-
-        except Exception as e:
-            print(f"❌ update_groups_dashboard_from_csv error: {e}")
-            try:
-                layout.addWidget(QLabel(f"Failed to render: {e}"), 0, 0)
-            except Exception:
-                pass
-        finally:
-            self._groups_dash_refreshing = False
-            try:
-                combo.blockSignals(False)
-            except Exception:
-                pass
-
     def display_dataframe(self, df: pd.DataFrame):
         self.identity_table.setRowCount(0)
         self.identity_table.setColumnCount(len(df.columns))
@@ -4647,6 +4137,638 @@ class OffboardManager(QWidget):
         layout.addWidget(make_table("Top Countries", s("Country")), r, 1)
         layout.addWidget(make_table("Top Domains", domains), r, 2)
 
+    def update_devices_dashboard_from_csv(self, combo, layout):
+        # 1) Clear existing widgets
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item:
+                widget = item.widget()
+                if widget is not None:
+                    layout.removeWidget(widget)
+                    widget.deleteLater()
+
+        # 2) Load CSV
+        path = combo.currentText()
+        if not path.endswith(".csv"):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                sniffer = csv.Sniffer()
+                delimiter = sniffer.sniff(sample).delimiter
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+            return
+
+        # -------- Helpers --------
+        def s(name: str) -> pd.Series:
+            if name in df.columns:
+                return df[name].astype(str).fillna("")
+            return pd.Series([""] * total, dtype=str)
+
+        def b(name: str) -> pd.Series:
+            return s(name).str.lower().eq("true")
+
+        # -------- Metrics --------
+        compliant = (s("ComplianceState").str.lower() == "compliant").sum()
+        non_compliant = total - compliant
+        encrypted = b("IsEncrypted").sum()
+        unencrypted = total - encrypted
+        autopilot = b("AutopilotEnrolled").sum()
+
+        windows = s("OperatingSystem").str.contains("Windows", case=False).sum()
+        macos = s("OperatingSystem").str.contains("Mac", case=False).sum()
+        ios = s("OperatingSystem").str.contains("iOS", case=False).sum()
+        android = s("OperatingSystem").str.contains("Android", case=False).sum()
+
+        last_sync = pd.to_datetime(s("LastSyncDateTime"), errors="coerce", utc=True)
+        stale = int(((pd.Timestamp.utcnow() - last_sync) > pd.Timedelta(days=30)).fillna(False).sum())
+
+        # -------- Card factory (with on_click) --------
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #1a1a1a
+                    );
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(
+                        x1:0, y1:0, x2:1, y2:1,
+                        stop:0 {color}, stop:1 #333333
+                    );
+                }}
+                QLabel {{
+                    color: white;
+                    background: transparent;
+                }}
+            """)
+
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            vbox = QVBoxLayout(card)
+
+            # Title row
+            title_row = QHBoxLayout()
+            if icon:
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                title_row.addWidget(icon_lbl)
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+            title_row.addWidget(title_lbl)
+            title_row.addStretch()
+            vbox.addLayout(title_row)
+
+            # Value
+            value_lbl = QLabel(str(value))
+            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+            vbox.addWidget(value_lbl)
+
+            if subtitle:
+                sub_lbl = QLabel(subtitle)
+                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                vbox.addWidget(sub_lbl)
+
+            # 🔹 Make clickable
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda event: on_click()
+
+            return card
+
+        # -------- Add device cards --------
+        cards = [
+            ("Devices Total", total, "#34495e", "💻", "All devices",
+             lambda: self.show_filtered_devices("Id", "")),  # show all
+            ("Compliant", compliant, "#27ae60", "✅", "ComplianceState = compliant",
+             lambda: self.show_filtered_devices("ComplianceState", "compliant")),
+            ("Non-Compliant", non_compliant, "#c0392b", "❌", "Other states",
+             lambda: self.show_filtered_devices("ComplianceState", "noncompliant")),
+            ("Encrypted", encrypted, "#16a085", "🔒", "BitLocker/FileVault on",
+             lambda: self.show_filtered_devices("IsEncrypted", "True")),
+            ("Unencrypted", unencrypted, "#d35400", "🔓", "No encryption",
+             lambda: self.show_filtered_devices("IsEncrypted", "False")),
+            ("Autopilot Enrolled", autopilot, "#2980b9", "🚀", "Devices in Autopilot",
+             lambda: self.show_filtered_devices("AutopilotEnrolled", "True")),
+            ("Windows", windows, "#3498db", "🪟", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Windows")),
+            ("macOS", macos, "#9b59b6", "🍎", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Mac")),
+            ("iOS", ios, "#e67e22", "📱", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "iOS")),
+            ("Android", android, "#27ae60", "🤖", "OS breakdown",
+             lambda: self.show_filtered_devices("OperatingSystem", "Android")),
+            ("Stale >30d", stale, "#7f8c8d", "⏳", "Last sync older than 30 days",
+             lambda: self.show_filtered_devices("LastSyncDateTime", "stale")),
+        ]
+
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub, on_click in cards:
+            card = make_card(title, val, col_hex, icon, sub, on_click=on_click)
+            layout.addWidget(card, r, c)
+            c += 1
+            if c == cols:
+                r += 1
+                c = 0
+
+        # ✅ Ensure next section starts on a new row
+        if c != 0:
+            r += 1
+
+        # ---- Top tables for Devices Dashboard ----
+        def make_top_table(title, series: pd.Series, n=10):
+            """Reusable function to create dark, compact summary tables."""
+            vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+            frame = QFrame()
+            frame.setStyleSheet("""
+                QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                QLabel { color: white; }
+                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+            """)
+            v = QVBoxLayout(frame)
+
+            t = QLabel(title)
+            t.setStyleSheet("font-size:14px; font-weight:bold;")
+            v.addWidget(t)
+
+            table = QTableWidget()
+            table.setRowCount(len(vc))
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["Value", "Count"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+            for i, (val, count) in enumerate(vc.items()):
+                table.setItem(i, 0, QTableWidgetItem(str(val)))
+                table.setItem(i, 1, QTableWidgetItem(str(count)))
+
+            table.resizeColumnsToContents()
+            table.setFixedHeight(250)
+            v.addWidget(table)
+            return frame
+
+        # ---- Add top summaries (auto-safe if columns exist) ----
+        top_sections = []
+
+        if "Model" in df.columns:
+            top_sections.append(("Top Models", s("Model")))
+        if "Manufacturer" in df.columns:
+            top_sections.append(("Top Manufacturers", s("Manufacturer")))
+        if "OperatingSystem" in df.columns:
+            top_sections.append(("Top Operating Systems", s("OperatingSystem")))
+        if "ComplianceState" in df.columns:
+            top_sections.append(("Top Compliance States", s("ComplianceState")))
+        if "UserPrincipalName" in df.columns:
+            top_sections.append(("Top Users", s("UserPrincipalName")))
+        if "ManagementState" in df.columns:
+            top_sections.append(("Top Management States", s("ManagementState")))
+
+        # Place 3 tables per row (like other dashboards)
+        c = 0
+        for title, series in top_sections:
+            layout.addWidget(make_top_table(title, series), r, c)
+            c += 1
+            if c == 3:
+                r += 1
+                c = 0
+
+    def update_apps_dashboard_from_csv(self, combo, layout):
+        """
+        Rebuild the Apps dashboard using the same visual and interactive logic as the Devices dashboard.
+        Cards are fully clickable (no internal hover flicker), and clicking switches to the Apps table view.
+        """
+        if getattr(self, "_apps_dash_refreshing", False):
+            return
+        self._apps_dash_refreshing = True
+
+        try:
+            if combo is None or layout is None:
+                return
+
+            from PyQt6.QtCore import QSignalBlocker
+            _blocker = QSignalBlocker(combo)
+
+            # ---- Clear layout ----
+            for i in reversed(range(layout.count())):
+                item = layout.itemAt(i)
+                if item and item.widget():
+                    w = item.widget()
+                    layout.removeWidget(w)
+                    w.deleteLater()
+
+            # ---- Load CSV ----
+            path = combo.currentText()
+            if not path or not path.endswith(".csv") or not os.path.exists(path):
+                layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+                return
+
+            import csv
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    sample = f.read(2048)
+                    try:
+                        delimiter = csv.Sniffer().sniff(sample).delimiter
+                    except Exception:
+                        delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+                df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            except Exception as e:
+                layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+                return
+
+            total = len(df)
+            if total == 0:
+                layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+                return
+
+            # ---- Helpers ----
+            def s(col):
+                return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+            # ---- Metrics ----
+            installs = total
+            unique_apps = s("AppDisplayName").replace("", pd.NA).dropna().nunique()
+            unique_devices = s("DeviceName").replace("", pd.NA).dropna().nunique()
+            unique_users = s("UserPrincipalName").replace("", pd.NA).dropna().nunique()
+
+            platform_series = s("Platform").str.lower()
+            win_count = (platform_series == "windows").sum()
+            mac_count = (platform_series == "macos").sum()
+            ios_count = (platform_series == "ios").sum()
+            android_count = (platform_series == "android").sum()
+            other_platform = total - (win_count + mac_count + ios_count + android_count)
+
+            publisher_empty = s("Publisher").str.strip().eq("").sum()
+
+            # ---- Card Factory (Devices-style) ----
+            def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+                card = QFrame()
+                card.setStyleSheet(f"""
+                    QFrame {{
+                        background: qlineargradient(
+                            x1:0, y1:0, x2:1, y2:1,
+                            stop:0 {color}, stop:1 #1a1a1a
+                        );
+                        border-radius: 12px;
+                        padding: 16px;
+                    }}
+                    QFrame:hover {{
+                        background: qlineargradient(
+                            x1:0, y1:0, x2:1, y2:1,
+                            stop:0 {color}, stop:1 #333333
+                        );
+                    }}
+                    QLabel {{
+                        color: white;
+                        background: transparent;
+                    }}
+                """)
+
+                shadow = QGraphicsDropShadowEffect()
+                shadow.setBlurRadius(25)
+                shadow.setOffset(0, 4)
+                shadow.setColor(QColor(0, 0, 0, 160))
+                card.setGraphicsEffect(shadow)
+
+                vbox = QVBoxLayout(card)
+                row = QHBoxLayout()
+
+                if icon:
+                    icon_lbl = QLabel(icon)
+                    icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                    row.addWidget(icon_lbl)
+
+                title_lbl = QLabel(title)
+                title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+                row.addWidget(title_lbl)
+                row.addStretch()
+                vbox.addLayout(row)
+
+                value_lbl = QLabel(str(value))
+                value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+                vbox.addWidget(value_lbl)
+
+                if subtitle:
+                    sub_lbl = QLabel(subtitle)
+                    sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                    vbox.addWidget(sub_lbl)
+
+                # Make the whole card clickable
+                if on_click:
+                    card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                    card.mousePressEvent = lambda e: on_click()
+
+                return card
+
+            # ---- Cards ----
+            cards = [
+                ("Installations", installs, "#34495e", "📦", "All rows",
+                 lambda: self.show_filtered_apps("ALL")),
+                ("Unique Apps", unique_apps, "#2c3e50", "🧩", "Distinct AppDisplayName",
+                 lambda: self.show_filtered_apps("DEDUP_APPS")),
+                ("Unique Devices", unique_devices, "#2980b9", "💻", "Distinct DeviceName",
+                 lambda: self.show_filtered_apps("DEDUP_DEVICES")),
+                ("Unique Users", unique_users, "#16a085", "👤", "Distinct UserPrincipalName",
+                 lambda: self.show_filtered_apps("DEDUP_USERS")),
+
+                ("Windows", win_count, "#3498db", "🪟", "Platform = Windows",
+                 lambda: self.show_filtered_apps("PLATFORM", "windows")),
+                ("macOS", mac_count, "#9b59b6", "🍎", "Platform = macOS",
+                 lambda: self.show_filtered_apps("PLATFORM", "macos")),
+                ("iOS", ios_count, "#e67e22", "📱", "Platform = iOS",
+                 lambda: self.show_filtered_apps("PLATFORM", "ios")),
+                ("Android", android_count, "#27ae60", "🤖", "Platform = Android",
+                 lambda: self.show_filtered_apps("PLATFORM", "android")),
+                ("Other", other_platform, "#7f8c8d", "❓", "Other platforms",
+                 lambda: self.show_filtered_apps("PLATFORM", "")),
+
+                ("Publisher missing", publisher_empty, "#d35400", "⚠️", "Publisher empty",
+                 lambda: self.show_filtered_apps("PUBLISHER_EMPTY")),
+            ]
+
+            cols = 3
+            r = c = 0
+            for title, val, color, icon, sub, cb in cards:
+                layout.addWidget(make_card(title, val, color, icon, sub, on_click=cb), r, c)
+                c += 1
+                if c == cols:
+                    r += 1
+                    c = 0
+
+            # ---- Top tables ----
+            def make_top_table(title, series: pd.Series, n=10):
+                vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+                frame = QFrame()
+                frame.setStyleSheet("""
+                    QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                    QLabel { color: white; }
+                    QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                    QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+                """)
+                v = QVBoxLayout(frame)
+                t = QLabel(title)
+                t.setStyleSheet("font-size: 14px; font-weight: bold;")
+                v.addWidget(t)
+
+                tbl = QTableWidget()
+                tbl.setRowCount(len(vc))
+                tbl.setColumnCount(2)
+                tbl.setHorizontalHeaderLabels(["Value", "Count"])
+                tbl.verticalHeader().setVisible(False)
+                tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+                tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+                hdr = tbl.horizontalHeader()
+                hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+                hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+                for i, (k, cnt) in enumerate(vc.items()):
+                    tbl.setItem(i, 0, QTableWidgetItem(str(k)))
+                    tbl.setItem(i, 1, QTableWidgetItem(str(cnt)))
+
+                tbl.resizeColumnsToContents()
+                tbl.setFixedHeight(250)
+                v.addWidget(tbl)
+                return frame
+
+            layout.addWidget(make_top_table("Top Apps", s("AppDisplayName")), r, 0)
+            layout.addWidget(make_top_table("Top Publishers", s("Publisher")), r, 1)
+            layout.addWidget(make_top_table("Top Platforms", s("Platform")), r, 2)
+
+        except Exception as e:
+            print(f"❌ update_apps_dashboard_from_csv error: {e}")
+            try:
+                layout.addWidget(QLabel(f"Failed to render: {e}"), 0, 0)
+            except Exception:
+                pass
+
+        finally:
+            self._apps_dash_refreshing = False
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def update_groups_dashboard_from_csv(self, combo, layout):
+        """
+        Build the Groups dashboard from the selected CSV file (Devices-dashboard style).
+        Each card is fully clickable and filters the table below.
+        """
+        # ---- Clear layout ----
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                w = item.widget()
+                layout.removeWidget(w)
+                w.deleteLater()
+
+        # ---- Load CSV ----
+        path = combo.currentText()
+        if not path or not path.endswith(".csv") or not os.path.exists(path):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        import csv
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                try:
+                    delimiter = csv.Sniffer().sniff(sample).delimiter
+                except Exception:
+                    delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            self.current_groups_df = df
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+            return
+
+        # ---- Helpers ----
+        def s(col):
+            return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+        # ---- Metrics ----
+        total_groups = total
+        mail_enabled = (s("Mail Enabled").str.lower() == "true").sum()
+        teams_enabled = (s("Is Teams Team").str.lower() == "true").sum()
+        dynamic_groups = (s("Membership Type").str.lower().str.contains("dynamic")).sum()
+        assigned_owners = s("Assigned Owners").replace("", pd.NA).dropna().count()
+        nested_groups = (s("Nested Groups").astype(str) != "0").sum()
+        role_assigned = s("Assigned Roles").replace("", pd.NA).dropna().count()
+        ca_include = s("Referenced In CA Policy Include").replace("", pd.NA).dropna().count()
+        ca_exclude = s("Referenced In CA Policy Exclude").replace("", pd.NA).dropna().count()
+
+        # ---- Card Factory (same as Devices style) ----
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333333);
+                }}
+                QLabel {{
+                    color: white;
+                    background: transparent;
+                }}
+            """)
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            vbox = QVBoxLayout(card)
+            title_row = QHBoxLayout()
+            if icon:
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                title_row.addWidget(icon_lbl)
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+            title_row.addWidget(title_lbl)
+            title_row.addStretch()
+            vbox.addLayout(title_row)
+
+            value_lbl = QLabel(str(value))
+            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+            vbox.addWidget(value_lbl)
+
+            if subtitle:
+                sub_lbl = QLabel(subtitle)
+                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                vbox.addWidget(sub_lbl)
+
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda e: on_click()
+
+            return card
+
+        # ---- Filtering behavior (uses same pattern as Devices dashboard) ----
+        def filter_groups(column, condition=None):
+            if column == "ALL":
+                filtered = df
+            elif column == "Mail Enabled":
+                filtered = df[df["Mail Enabled"].astype(str).str.lower() == "true"]
+            elif column == "Is Teams Team":
+                filtered = df[df["Is Teams Team"].astype(str).str.lower() == "true"]
+            elif column == "Membership Type":
+                filtered = df[df["Membership Type"].astype(str).str.contains("dynamic", case=False, na=False)]
+            elif column == "Assigned Owners":
+                filtered = df[df["Assigned Owners"].astype(str).str.strip() != ""]
+            elif column == "Nested Groups":
+                filtered = df[df["Nested Groups"].astype(str) != "0"]
+            elif column == "Assigned Roles":
+                filtered = df[df["Assigned Roles"].astype(str).str.strip() != ""]
+            elif column == "CA Include":
+                filtered = df[df["Referenced In CA Policy Include"].astype(str).str.strip() != ""]
+            elif column == "CA Exclude":
+                filtered = df[df["Referenced In CA Policy Exclude"].astype(str).str.strip() != ""]
+            else:
+                filtered = df
+            self.display_groups_dataframe(filtered)
+
+        # ---- Cards ----
+        cards = [
+            ("Total Groups", total_groups, "#34495e", "📦", "All groups", lambda: self.show_filtered_groups("ALL")),
+            ("Mail-enabled", mail_enabled, "#2980b9", "📧", "", lambda: self.show_filtered_groups("MAIL_ENABLED")),
+            ("Teams-enabled", teams_enabled, "#9b59b6", "💬", "", lambda: self.show_filtered_groups("TEAMS_ENABLED")),
+            ("Dynamic Groups", dynamic_groups, "#16a085", "⚙️", "", lambda: self.show_filtered_groups("DYNAMIC")),
+            ("With Owners", assigned_owners, "#27ae60", "👤", "", lambda: self.show_filtered_groups("WITH_OWNERS")),
+            ("Nested Groups", nested_groups, "#d35400", "🧩", "", lambda: self.show_filtered_groups("NESTED")),
+            ("Role-assigned", role_assigned, "#8e44ad", "🔐", "", lambda: self.show_filtered_groups("ROLE_ASSIGNED")),
+            ("CA Include", ca_include, "#3498db", "🛡️", "", lambda: self.show_filtered_groups("CA_INCLUDE")),
+            ("CA Exclude", ca_exclude, "#e67e22", "🚫", "", lambda: self.show_filtered_groups("CA_EXCLUDE")),
+        ]
+
+        # ---- Add cards to layout ----
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub, cb in cards:
+            layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
+            c += 1
+            if c == cols:
+                r += 1
+                c = 0
+
+        # ---- Top tables for Groups Dashboard ----
+        def make_top_table(title, series: pd.Series, n=10):
+            """Create a compact Top-N summary table with dark theme."""
+            vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+            frame = QFrame()
+            frame.setStyleSheet("""
+                QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                QLabel { color: white; }
+                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+            """)
+
+            v = QVBoxLayout(frame)
+            t = QLabel(title)
+            t.setStyleSheet("font-size:14px; font-weight:bold;")
+            v.addWidget(t)
+
+            table = QTableWidget()
+            table.setRowCount(len(vc))
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["Value", "Count"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+            for i, (val, count) in enumerate(vc.items()):
+                table.setItem(i, 0, QTableWidgetItem(str(val)))
+                table.setItem(i, 1, QTableWidgetItem(str(count)))
+
+            table.resizeColumnsToContents()
+            table.setFixedHeight(250)
+            v.addWidget(table)
+            return frame
+
+        # 🧠 Now define your Top-N sections
+        layout.addWidget(make_top_table("Top Group Types", s("Group Type")), r, 0)
+        layout.addWidget(make_top_table("Top Roles Assigned", s("Assigned Roles")), r, 1)
+        layout.addWidget(make_top_table("Top Owners", s("Assigned Owners")), r, 2)
+
     def show_filtered_users(self, column_name, filter_value):
         """Switch to Identity tab and show only users matching filter."""
         self.show_named_page("identity")
@@ -4712,57 +4834,54 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"App filtering failed:\n{e}")
 
-    def show_filtered_groups(self, mode, value=None):
-        """Switch to Groups tab and show filtered groups based on dashboard click."""
-        self.show_named_page("groups")
-
-        if not hasattr(self, "current_groups_df") or self.current_groups_df is None:
-            return
-
-        df = self.current_groups_df.copy()
-
+    def show_filtered_groups(self, filter_type, filter_value=None):
+        """
+        Show the Groups table and apply a filter based on the clicked dashboard card.
+        """
         try:
-            if mode == "ALL":
-                filtered = df
-
-            elif mode == "MAIL_ENABLED":
-                filtered = df[df["Mail Enabled"].str.lower() == "true"]
-
-            elif mode == "TEAMS_ENABLED":
-                filtered = df[df["Is Teams Team"].str.lower() == "true"]
-
-            elif mode == "DYNAMIC":
-                filtered = df[df["Membership Type"].str.lower().str.contains("dynamic", na=False)]
-
-            elif mode == "WITH_OWNERS":
-                filtered = df[df["Assigned Owners"].astype(str).str.strip() != ""]
-
-            elif mode == "NESTED":
-                filtered = df[df["Nested Groups"].astype(str) != "0"]
-
-            elif mode == "ROLE_ASSIGNED":
-                filtered = df[df["Assigned Roles"].astype(str).str.strip() != ""]
-
-            elif mode == "CA_INCLUDE":
-                filtered = df[df["Referenced In CA Policy Include"].astype(str).str.strip() != ""]
-
-            elif mode == "CA_EXCLUDE":
-                filtered = df[df["Referenced In CA Policy Exclude"].astype(str).str.strip() != ""]
-
-            elif mode == "GROUP_TYPE":
-                if value:
-                    filtered = df[df["Group Type"].astype(str).str.lower() == value.lower()]
-                else:
-                    filtered = df[df["Group Type"].astype(str).str.strip() == ""]
-
-            else:
+            if not hasattr(self, "current_groups_df"):
+                QMessageBox.warning(self, "No Data", "No Groups data is loaded yet.")
                 return
 
-            # Display filtered data in your main table
+            df = self.current_groups_df.copy()
+
+            # --- Apply filters ---
+            if filter_type == "ALL":
+                filtered = df
+            elif filter_type == "MAIL_ENABLED":
+                filtered = df[df["Mail Enabled"].astype(str).str.lower() == "true"]
+            elif filter_type == "TEAMS_ENABLED":
+                filtered = df[df["Is Teams Team"].astype(str).str.lower() == "true"]
+            elif filter_type == "DYNAMIC":
+                filtered = df[df["Membership Type"].astype(str).str.contains("dynamic", case=False, na=False)]
+            elif filter_type == "WITH_OWNERS":
+                filtered = df[df["Assigned Owners"].astype(str).str.strip() != ""]
+            elif filter_type == "NESTED":
+                filtered = df[df["Nested Groups"].astype(str) != "0"]
+            elif filter_type == "ROLE_ASSIGNED":
+                filtered = df[df["Assigned Roles"].astype(str).str.strip() != ""]
+            elif filter_type == "CA_INCLUDE":
+                filtered = df[df["Referenced In CA Policy Include"].astype(str).str.strip() != ""]
+            elif filter_type == "CA_EXCLUDE":
+                filtered = df[df["Referenced In CA Policy Exclude"].astype(str).str.strip() != ""]
+            else:
+                filtered = df
+
+            # --- Navigate to Groups Table page ---
+            try:
+                if "groups" in self.page_map:
+                    self.stacked.setCurrentWidget(self.page_map["groups"])
+                else:
+                    print("⚠️ Could not find 'groups' in page_map.")
+            except Exception as e:
+                print(f"⚠️ Could not switch to Groups page: {e}")
+
+            # --- Render filtered table ---
             self.display_groups_dataframe(filtered)
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Group filtering failed:\n{e}")
+            print(f"❌ show_filtered_groups error: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to filter groups:\n\n{e}")
 
     def reload_app(self):
         """Restart the entire application."""

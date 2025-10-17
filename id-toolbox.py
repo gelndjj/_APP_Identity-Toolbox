@@ -15,7 +15,6 @@ from faker import Faker
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 
-
 class ClickableCard(QFrame):
     clicked = pyqtSignal()
 
@@ -26,7 +25,6 @@ class ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
-
 
 class PowerShellLoggerWorker(QThread):
     output = pyqtSignal(str)
@@ -71,7 +69,6 @@ class PowerShellLoggerWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
 class PowerShellWorkerWithParam(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -100,7 +97,6 @@ class PowerShellWorkerWithParam(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
 class PowerShellWorker(QThread):
     finished = pyqtSignal(str, str)  # status, message
 
@@ -119,10 +115,9 @@ class PowerShellWorker(QThread):
         except Exception as e:
             self.finished.emit("error", str(e))
 
-
 class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)  # live log lines
-    finished = pyqtSignal(str, str)  # status, message
+    output = pyqtSignal(str)          # live log lines
+    finished = pyqtSignal(str, str)   # status, message
 
     def __init__(self, command):
         super().__init__()
@@ -151,7 +146,6 @@ class StreamingPowerShellWorker(QThread):
 
         except Exception as e:
             self.finished.emit("error", str(e))
-
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -219,8 +213,7 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
-
-# --- Groups Comparison---#
+#--- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -252,7 +245,6 @@ class CompareGroupsWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
         super().__init__(parent)
@@ -262,6 +254,7 @@ class GroupsComparisonDialog(QDialog):
         self.upn_list = sorted(upn_list or [])
 
         layout = QVBoxLayout(self)
+        self.assign_btn = None  # track the single Assign button
 
         # --- Form section ---
         form_layout = QFormLayout()
@@ -334,15 +327,21 @@ class GroupsComparisonDialog(QDialog):
         self.compare_button.setText("Compare Groups")
         self.populate_table(data)
 
-        # Add below self.populate_table(data)
         missing1 = data.get("MissingInUser1", [])
         missing2 = data.get("MissingInUser2", [])
 
+        # ✅ Remove old button if it exists
+        if self.assign_btn:
+            self.layout().removeWidget(self.assign_btn)
+            self.assign_btn.deleteLater()
+            self.assign_btn = None
+
+        # ✅ Create a new one only if needed
         if missing1 or missing2:
-            assign_btn = QPushButton("Assign Missing Groups…")
-            assign_btn.setStyleSheet("font-weight: bold; padding: 6px;")
-            assign_btn.clicked.connect(lambda: self.open_assign_dialog(data))
-            self.layout().addWidget(assign_btn)
+            self.assign_btn = QPushButton("Assign Missing Groups…")
+            self.assign_btn.setStyleSheet("font-weight: bold; padding: 6px;")
+            self.assign_btn.clicked.connect(lambda: self.open_assign_dialog(data))
+            self.layout().addWidget(self.assign_btn)
 
     def open_assign_dialog(self, data):
         missing1 = data.get("MissingInUser1", [])
@@ -350,20 +349,65 @@ class GroupsComparisonDialog(QDialog):
         user1 = self.user1_combo.currentText()
         user2 = self.user2_combo.currentText()
 
-        # Choose direction with a quick dialog
-        choice = QMessageBox.question(
-            self,
-            "Select direction",
-            f"Assign groups missing in {user2} from {user1}?\n"
-            f"Or the reverse?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
-        )
+        # 🧩 Clearer explanation for direction
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Select Assignment Direction")
+
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(f"""
+            <div style="font-size:14px; line-height:1.5; text-align:center;">
+                <b>How do you want to assign groups?</b><br><br>
+                ➤ <b>Yes</b> → Copy groups <span style="color:#0066cc;">missing in</span><br>
+                <b>{user2}</b><br>
+                <span style="color:#0066cc;">from</span> <b>{user1}</b>.<br><br>
+                ➤ <b>No</b> → Copy groups <span style="color:#0066cc;">missing in</span><br>
+                <b>{user1}</b><br>
+                <span style="color:#0066cc;">from</span> <b>{user2}</b>.
+            </div>
+        """)
+
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.Yes)
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #fafafa;
+            }
+            QLabel {
+                font-family: -apple-system, "Segoe UI", Helvetica, Arial;
+                color: #222;
+                padding: 10px;
+            }
+            QPushButton {
+                min-width: 80px;
+                padding: 6px 12px;
+                font-weight: 600;
+            }
+        """)
+
+        choice = msg.exec()
+
+        # ✅ Corrected mapping:
+        # MissingInUser2 = groups User2 is missing → copy from User1 to User2
+        # MissingInUser1 = groups User1 is missing → copy from User2 to User1
 
         if choice == QMessageBox.StandardButton.Yes:
-            dialog = AssignGroupsDialog(self, user1, user2, missing2)
+            # YES → assign groups missing in User2 (copy from user1 to user2)
+            dialog = AssignMissingGroupsDialog(
+                self,
+                source_user=user1,
+                target_user=user2,
+                missing_groups=missing2
+            )
         else:
-            dialog = AssignGroupsDialog(self, user2, user1, missing1)
+            # NO → assign groups missing in User1 (copy from user2 to user1)
+            dialog = AssignMissingGroupsDialog(
+                self,
+                source_user=user2,
+                target_user=user1,
+                missing_groups=missing1
+            )
+
         dialog.exec()
 
     def on_compare_error(self, message):
@@ -405,10 +449,9 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-
-# --- Groups Assignments---#
+#--- Groups Assignments---#
 class AssignGroupsWorker(QThread):
-    finished = pyqtSignal(str, str)  # stdout, stderr
+    finished = pyqtSignal(str, str)   # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -432,7 +475,6 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -561,9 +603,9 @@ class AssignGroupsDialog(QDialog):
             "-File", script_path,
             "-UserUPNs", ",".join(self.user_upns),
             "-GroupIDs", ",".join([
-                grp["ObjectId"] for i, grp in enumerate(self.groups)
-                if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
-            ])
+            grp["ObjectId"] for i, grp in enumerate(self.groups)
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ])
         ]
 
         self.worker = AssignGroupsWorker(command)
@@ -666,10 +708,9 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
-# --- Access Package ---#
+#--- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
-    finished = pyqtSignal(str, str)  # stdout, stderr
+    finished = pyqtSignal(str, str)   # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -705,7 +746,6 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -937,8 +977,160 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+# --- Missing Groups Assignment Dialog --- #
+class AssignMissingGroupsDialog(QDialog):
+    def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
+        super().__init__(parent)
+        self.source_user = source_user
+        self.target_user = target_user
+        self.missing_groups = missing_groups or []
 
-# --- Application ---#
+        self.setWindowTitle("Assign Missing Groups")
+        self.setMinimumWidth(850)
+        self.setMinimumHeight(500)
+
+        layout = QVBoxLayout(self)
+
+        # --- Info Header ---
+        header = QLabel(f"""
+            <b>Source:</b> {self.source_user}<br>
+            <b>Target:</b> {self.target_user}<br><br>
+            Select which missing groups should be assigned to the target user.
+        """)
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        # --- Table ---
+        self.table = QTableWidget(len(self.missing_groups), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Group Name"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        for i, grp in enumerate(self.missing_groups):
+            chk_item = QTableWidgetItem()
+            chk_item.setCheckState(Qt.CheckState.Checked)
+            self.table.setItem(i, 0, chk_item)
+            self.table.setItem(i, 1, QTableWidgetItem(grp))
+
+        layout.addWidget(self.table)
+
+        # --- Buttons ---
+        btn_layout = QHBoxLayout()
+        self.assign_btn = QPushButton("Assign Selected Groups")
+        self.assign_btn.setStyleSheet("font-weight: bold; padding: 6px;")
+        self.assign_btn.clicked.connect(self.start_assignment)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(self.assign_btn)
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addStretch(1)
+        layout.addLayout(btn_layout)
+
+    # ----------------------------------------------------------------------
+    def start_assignment(self):
+        selected_groups = [
+            self.table.item(i, 1).text()
+            for i in range(self.table.rowCount())
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected_groups:
+            QMessageBox.warning(self, "No Groups Selected", "Please select at least one group to assign.")
+            return
+
+        # Use your existing PowerShell script
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "assign_missing_groups.ps1"
+        )
+
+        import json
+        groups_json = json.dumps(selected_groups)
+
+        command = [
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-SourceUserUPN", self.source_user,
+            "-TargetUserUPN", self.target_user,
+            "-GroupsJson", groups_json
+        ]
+
+        self.assign_btn.setEnabled(False)
+        self.assign_btn.setText("⏳ Assigning...")
+
+        self.worker = AssignGroupsWorker(command)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.error.connect(self.on_error)
+        self.worker.start()
+
+    # ----------------------------------------------------------------------
+    def on_finished(self, stdout, stderr=""):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Groups")
+
+        if stderr.strip():
+            QMessageBox.warning(self, "PowerShell Warning", stderr)
+
+        try:
+            results = json.loads(stdout)
+        except Exception:
+            QMessageBox.warning(self, "Invalid Output", stdout)
+            return
+
+        # Normalize results
+        if isinstance(results, dict):
+            results = [results]
+        elif isinstance(results, list):
+            # Handle both string and dict types
+            normalized = []
+            for r in results:
+                if isinstance(r, str):
+                    normalized.append({"GroupName": r, "Status": "✅ Added (no details)"})
+                elif isinstance(r, dict):
+                    normalized.append(r)
+            results = normalized
+        else:
+            results = [{"GroupName": "Unknown", "Status": str(results)}]
+
+        # --- Results Dialog ---
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Assignment Results")
+        dlg.resize(600, 400)
+        layout = QVBoxLayout(dlg)
+
+        table = QTableWidget(len(results), 2)
+        table.setHorizontalHeaderLabels(["Group", "Status"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        for i, r in enumerate(results):
+            group = r.get("GroupName", "N/A")
+            status = r.get("Status", "")
+
+            item = QTableWidgetItem(status)
+            if "✅" in status or "success" in status.lower():
+                item.setForeground(QBrush(QColor("green")))
+            elif "❌" in status or "fail" in status.lower():
+                item.setForeground(QBrush(QColor("red")))
+
+            table.setItem(i, 0, QTableWidgetItem(group))
+            table.setItem(i, 1, item)
+
+        layout.addWidget(table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(lambda: (dlg.close(), self.close()))
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        dlg.exec()
+
+    def on_error(self, err):
+        self.assign_btn.setEnabled(True)
+        self.assign_btn.setText("Assign Selected Groups")
+        QMessageBox.critical(self, "PowerShell Error", err)
+
+#--- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
@@ -1821,8 +2013,7 @@ class OffboardManager(QWidget):
         # Console output
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setStyleSheet(
-            "background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
+        self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
         console_layout.addWidget(self.console_output)
 
         # Populate logs at startup
@@ -1840,8 +2031,7 @@ class OffboardManager(QWidget):
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
-        self.btn_create_user.clicked.connect(
-            lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
+        self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
@@ -2009,40 +2199,24 @@ class OffboardManager(QWidget):
                     if hasattr(self, "field_usagelocation"):
                         if self.field_usagelocation.count() == 0:
                             self.field_usagelocation.addItems([
-                                "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT",
-                                "AZ",
-                                "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV",
-                                "BR",
-                                "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN",
-                                "CX",
-                                "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ",
-                                "DM",
-                                "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF",
-                                "PF",
-                                "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG",
-                                "GN",
-                                "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE",
-                                "IM",
-                                "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA",
-                                "LV",
-                                "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML",
-                                "MT",
-                                "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ",
-                                "MM",
-                                "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM",
-                                "PK",
-                                "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO",
-                                "RU",
-                                "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS",
-                                "SC",
-                                "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR",
-                                "SJ",
-                                "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN",
-                                "TR",
-                                "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN",
-                                "VG",
-                                "VI", "WF", "EH", "YE", "ZM", "ZW"
-                            ])
+                            "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
+                            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR",
+                            "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN", "CX",
+                            "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ", "DM",
+                            "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF",
+                            "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN",
+                            "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM",
+                            "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV",
+                            "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT",
+                            "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM",
+                            "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK",
+                            "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU",
+                            "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS", "SC",
+                            "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR", "SJ",
+                            "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN", "TR",
+                            "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
+                            "VI", "WF", "EH", "YE", "ZM", "ZW"
+                        ])
                         self.field_usagelocation.setCurrentText("")
 
             else:
@@ -2504,6 +2678,7 @@ class OffboardManager(QWidget):
             self.refresh_csv_lists("apps")
         elif idx == 3:
             self.refresh_csv_lists("groups")
+
 
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
@@ -3632,8 +3807,7 @@ class OffboardManager(QWidget):
             "Password", "Job title", "Company name", "Department", "Employee ID", "City",
             "Country or region", "State or province", "Office location", "Street address",
             "Manager", "Sponsors", "Usage location", "ZIP or postal code", "Business phone"
-                                                                           "Mobile phone", "Other emails", "Age group",
-            "Consent provided for minor", "Access Package"
+            "Mobile phone", "Other emails", "Age group", "Consent provided for minor", "Access Package"
         ]
 
         try:
@@ -4594,7 +4768,6 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

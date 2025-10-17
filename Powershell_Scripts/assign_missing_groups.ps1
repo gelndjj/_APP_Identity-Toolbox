@@ -1,7 +1,7 @@
 param(
     [string]$SourceUserUPN,
     [string]$TargetUserUPN,
-    [string]$GroupsJson  # 👈 JSON string input
+    [string]$GroupsJson
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,23 +16,17 @@ catch {
     exit 1
 }
 
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-
 $result = @()
 
 try {
-    # Ensure Graph session
     $ctx = Get-MgContext -ErrorAction SilentlyContinue
     if (-not $ctx) {
         Connect-MgGraph -Scopes "Group.ReadWrite.All","User.Read.All","Directory.Read.All" -NoWelcome | Out-Null
     }
 
-    # Make sure we have the necessary modules
     Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue
     Import-Module Microsoft.Graph.Groups -ErrorAction SilentlyContinue
 
-    # Get users
     $source = Get-MgUser -Filter "userPrincipalName eq '$($SourceUserUPN.Replace("'", "''"))'" -ErrorAction Stop
     $target = Get-MgUser -Filter "userPrincipalName eq '$($TargetUserUPN.Replace("'", "''"))'" -ErrorAction Stop
 
@@ -45,22 +39,49 @@ try {
                 continue
             }
 
-            # Skip dynamic groups
             if ($group.GroupTypes -contains "DynamicMembership") {
                 $result += [PSCustomObject]@{ GroupName = $gName; Status = "⏭️ Skipped (Dynamic group)" }
                 continue
             }
 
-            # Build REST request manually
-            $uri = "https://graph.microsoft.com/v1.0/groups/$($group.Id)/members/`$ref"
-            $body = @{ "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($target.Id)" } | ConvertTo-Json
-
             try {
-                Invoke-MgGraphRequest -Method POST -Uri $uri -Body $body -ErrorAction Stop
-                $result += [PSCustomObject]@{ GroupName = $group.DisplayName; Status = "✅ Added successfully" }
+                if (-not $target.Id -or -not $group.Id) {
+                    throw "Missing user or group ID. TargetId=$($target.Id), GroupId=$($group.Id)"
+                }
+
+                New-MgGroupMemberByRef -GroupId $group.Id -BodyParameter @{
+                    "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($target.Id)"
+                } -ErrorAction Stop
+
+                $result += [PSCustomObject]@{
+                    GroupName = $group.DisplayName
+                    Status    = "✅ Added successfully"
+                }
             }
             catch {
-                $result += [PSCustomObject]@{ GroupName = $group.DisplayName; Status = "❌ Add failed: $($_.Exception.Message)" }
+                $msg = $_.Exception.Message
+                if ($msg -match "One or more added object references already exist") {
+                    $status = "ℹ️ Already a member"
+                }
+                elseif ($msg -match "BadRequest" -and $msg -match "dynamic") {
+                    $status = "⏭️ Dynamic group (cannot add manually)"
+                }
+                elseif ($msg -match "does not indicate success") {
+                    $status = "❌ Add failed: BadRequest (check if user already member or group is role-assignable)"
+                }
+                elseif ($msg -match "Insufficient privileges") {
+                    $status = "⚠️ Permission denied"
+                }
+                else {
+                    $status = "❌ Add failed: $msg"
+                }
+
+                if ($status.Length -gt 90) { $status = $status.Substring(0, 90) + "…" }
+
+                $result += [PSCustomObject]@{
+                    GroupName = $group.DisplayName
+                    Status    = $status
+                }
             }
         }
         catch {
@@ -79,6 +100,5 @@ if (-not $result -or $result.Count -eq 0) {
     })
 }
 
-# Output proper JSON
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $result | ConvertTo-Json -Depth 5 -Compress

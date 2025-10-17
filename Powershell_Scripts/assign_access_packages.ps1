@@ -1,104 +1,86 @@
 param(
-    [string[]]$UserUPNs,
-    [string]$AccessPackagesJson
+    [string]$UserUPNs,
+    [string]$AccessPackageName
 )
 
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
+$ErrorActionPreference   = 'Stop'
+$ProgressPreference      = 'SilentlyContinue'
+$VerbosePreference       = 'SilentlyContinue'   # 👈 debug is off unless -Verbose
+$InformationPreference   = 'SilentlyContinue'   # (if you prefer Write-Information)
 
-try {
-    $AccessPackages = $AccessPackagesJson | ConvertFrom-Json
-    if (-not $AccessPackages) { throw "No access packages found in JSON input." }
+
+# --- Normalize ---
+$upnList = $UserUPNs -split '[,; \r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+Write-Verbose "🧩 Parsed UPNs as array ($($upnList.Count)):`n - $($upnList -join "`n - ")"
+
+# --- Graph connection ---
+$ctx = Get-MgContext -ErrorAction SilentlyContinue
+if (-not $ctx) {
+    Connect-MgGraph -Scopes "EntitlementManagement.ReadWrite.All","User.Read.All","Directory.Read.All" -NoWelcome | Out-Null
 }
-catch {
-    Write-Host "❌ Failed to parse AccessPackagesJson: $AccessPackagesJson"
-    exit 1
-}
+Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue | Out-Null
+Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue | Out-Null
 
-$result = @()
-
-try {
-    # Ensure Graph connection
-    $ctx = Get-MgContext -ErrorAction SilentlyContinue
-    if (-not $ctx) {
-        Connect-MgGraph -Scopes "EntitlementManagement.ReadWrite.All","User.Read.All" -NoWelcome | Out-Null
-    }
-
-    Import-Module Microsoft.Graph.Identity.Governance -ErrorAction SilentlyContinue
-    Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue
-
-    foreach ($user in $UserUPNs) {
-        try {
-            $target = Get-MgUser -Filter "userPrincipalName eq '$($user.Replace("'", "''"))'" -ErrorAction Stop
-
-            foreach ($pkg in $AccessPackages) {
-                try {
-                    $pkgId = $pkg.AccessPackageId
-                    $pkgName = $pkg.AccessPackageName
-                    $policyId = $pkg.Policies[0].PolicyId
-
-                    if (-not $pkgId -or $pkgId -notmatch '^[0-9a-fA-F-]{36}$') {
-                        $result += [PSCustomObject]@{
-                            UserUPN = $user
-                            AccessPackageName = $pkgName
-                            Status = "⚠️ Invalid AccessPackageId"
-                        }
-                        continue
-                    }
-
-                    # Build the same request body your create_user.ps1 uses
-                    $params = @{
-                        requestType = "AdminAdd"
-                        assignment = @{
-                            targetId = $target.Id
-                            assignmentPolicyId = $policyId
-                            accessPackageId = $pkgId
-                        }
-                    }
-
-                    # Create the assignment request
-                    $response = New-MgEntitlementManagementAssignmentRequest -BodyParameter $params -ErrorAction Stop
-
-                    if ($response.Id) {
-                        $result += [PSCustomObject]@{
-                            UserUPN = $user
-                            AccessPackageName = $pkgName
-                            Status = "✅ Request created (ID: $($response.Id))"
-                        }
-                    }
-                    else {
-                        $result += [PSCustomObject]@{
-                            UserUPN = $user
-                            AccessPackageName = $pkgName
-                            Status = "⚠️ Created, but no request ID returned"
-                        }
-                    }
-                }
-                catch {
-                    $result += [PSCustomObject]@{
-                        UserUPN = $user
-                        AccessPackageName = $pkg.AccessPackageName
-                        Status = "❌ Failed: $($_.Exception.Message)"
-                    }
-                }
-            }
-        }
-        catch {
-            $result += [PSCustomObject]@{
-                UserUPN = $user
-                AccessPackageName = "N/A"
-                Status = "❌ Failed to get user: $($_.Exception.Message)"
-            }
-        }
-    }
-}
-catch {
-    $result += [PSCustomObject]@{
+# --- Find Access Package ---
+$escapedName = $AccessPackageName.Replace("'", "''")
+$apResp = Invoke-MgGraphRequest -Method GET -OutputType PSObject `
+    -Uri "https://graph.microsoft.com/beta/identityGovernance/entitlementManagement/accessPackages?`$filter=displayName eq '$escapedName'"
+$ap = $apResp.value | Select-Object -First 1
+if (-not $ap) {
+    Write-Output (@([pscustomobject]@{
         UserUPN = "N/A"
-        AccessPackageName = "N/A"
-        Status = "❌ Script failed: $($_.Exception.Message)"
+        AccessPackageName = $AccessPackageName
+        Status = "❌ Access package not found"
+    }) | ConvertTo-Json -Compress)
+    exit
+}
+
+Write-Verbose "🎁 Found Access Package: $($ap.displayName) [$($ap.id)]"
+
+# --- Get a valid policy ---
+$polResp = Invoke-MgGraphRequest -Method GET -OutputType PSObject `
+    -Uri "https://graph.microsoft.com/beta/identityGovernance/entitlementManagement/accessPackageAssignmentPolicies?`$filter=accessPackageId eq '$($ap.id)'"
+$policy = ($polResp.value | Where-Object { $_.status -eq 'enabled' }) | Select-Object -First 1
+if (-not $policy) { $policy = $polResp.value | Select-Object -First 1 }
+Write-Verbose "📦 Using policy: $($policy.displayName) [$($policy.id)]"
+
+# --- Assign ---
+$results = @()
+foreach ($upn in $upnList) {
+    Write-Host "👤 Processing user: $upn"
+    try {
+        $user = Get-MgUser -Filter "userPrincipalName eq '$($upn.Replace("'", "''"))'" -ErrorAction Stop
+        $body = @{
+            requestType = "AdminAdd"
+            assignment  = @{
+                targetId           = $user.Id
+                assignmentPolicyId = $policy.id
+                accessPackageId    = $ap.id
+            }
+        }
+        $resp = New-MgEntitlementManagementAssignmentRequest -BodyParameter $body -ErrorAction Stop
+        if ($resp.id) {
+            $results += [pscustomobject]@{
+                UserUPN           = $upn
+                AccessPackageName = $ap.displayName
+                Status            = "✅ Request created (ID: $($resp.id))"
+            }
+        } else {
+            $results += [pscustomobject]@{
+                UserUPN           = $upn
+                AccessPackageName = $ap.displayName
+                Status            = "⚠️ No ID returned"
+            }
+        }
+    } catch {
+        $results += [pscustomobject]@{
+            UserUPN           = $upn
+            AccessPackageName = $ap.displayName
+            Status            = "❌ Failed: $($_.Exception.Message)"
+        }
     }
 }
 
+# --- Output JSON ---
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$result | ConvertTo-Json -Depth 6 -Compress
+$results | ConvertTo-Json -Depth 5 -Compress

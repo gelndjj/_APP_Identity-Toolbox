@@ -4,14 +4,10 @@ param(
 )
 
 # --- Normalize GroupIDs array ---
-# Handle multiple input styles (space, comma, or separate args)
 $normalizedGroups = @()
-
 if ($GroupIDs -is [string]) {
-    # If PowerShell sees it as one long string
     $normalizedGroups = ($GroupIDs -split "[, ]+") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-}
-else {
+} else {
     foreach ($g in $GroupIDs) {
         if ($g -match "[, ]") {
             $normalizedGroups += ($g -split "[, ]+") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -20,17 +16,13 @@ else {
         }
     }
 }
-
 $GroupIDs = $normalizedGroups | Select-Object -Unique
 
 # --- Normalize UserUPNs array ---
 $normalizedUsers = @()
-
 if ($UserUPNs -is [string]) {
-    # Handle comma, space, semicolon separated list
     $normalizedUsers = ($UserUPNs -split "[,; ]+") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-}
-else {
+} else {
     foreach ($u in $UserUPNs) {
         if ($u -match "[,; ]") {
             $normalizedUsers += ($u -split "[,; ]+") | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -39,15 +31,15 @@ else {
         }
     }
 }
-
 $UserUPNs = $normalizedUsers | Select-Object -Unique
 
+# --- Setup Environment ---
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $result = @()
 
+# --- Connect to Graph ---
 try {
-    # Reuse session if possible
     $ctx = Get-MgContext -ErrorAction SilentlyContinue
     if (-not $ctx) {
         Connect-MgGraph -Scopes "User.Read.All","Group.ReadWrite.All","Directory.ReadWrite.All" -NoWelcome | Out-Null
@@ -59,18 +51,18 @@ try {
 Import-Module Microsoft.Graph.Users -ErrorAction SilentlyContinue
 Import-Module Microsoft.Graph.Groups -ErrorAction SilentlyContinue
 
+# --- Main logic ---
 foreach ($upn in $UserUPNs) {
     try {
-        # Lookup user (case-insensitive)
         $escaped = $upn.Replace("'", "''")
         $user = Get-MgUser -Filter "startswith(userPrincipalName,'$escaped')" -All |
                 Where-Object { $_.UserPrincipalName -ieq $upn }
 
         if (-not $user) {
             $result += [PSCustomObject]@{
-                UserPrincipalName = $upn
-                GroupName         = "N/A"
-                Status            = "❌ User not found"
+                UserUPN   = $upn
+                GroupName = "N/A"
+                Status    = "❌ User not found"
             }
             continue
         }
@@ -82,9 +74,9 @@ foreach ($upn in $UserUPNs) {
                 # Skip dynamic groups
                 if ($group.GroupTypes -contains "DynamicMembership") {
                     $result += [PSCustomObject]@{
-                        UserPrincipalName = $upn
-                        GroupName         = $group.DisplayName
-                        Status            = "⏭️ Skipped (Dynamic group)"
+                        UserUPN   = $upn
+                        GroupName = $group.DisplayName
+                        Status    = "⏭️ Skipped (Dynamic group)"
                     }
                     continue
                 }
@@ -95,9 +87,9 @@ foreach ($upn in $UserUPNs) {
 
                 if ($existing) {
                     $result += [PSCustomObject]@{
-                        UserPrincipalName = $upn
-                        GroupName         = $group.DisplayName
-                        Status            = "ℹ️ Already a member"
+                        UserUPN   = $upn
+                        GroupName = $group.DisplayName
+                        Status    = "ℹ️ Already a member"
                     }
                     continue
                 }
@@ -108,45 +100,37 @@ foreach ($upn in $UserUPNs) {
                     "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/$($user.Id)"
                 } | ConvertTo-Json -Compress
 
-                try {
-                    Invoke-MgGraphRequest -Method POST -Uri $uri -Body $body -ContentType "application/json" -ErrorAction Stop
-                    $result += [PSCustomObject]@{
-                        UserPrincipalName = $upn
-                        GroupName         = $group.DisplayName
-                        Status            = "✅ Added successfully"
-                    }
-                }
-                catch {
-                    $message = $_.Exception.Message
-                    if ($message -match "Insufficient privileges") {
-                        $status = "⚠️ Permission denied"
-                    } elseif ($message -match "BadRequest") {
-                        $status = "❌ Invalid request (check group type or membership)"
-                    } else {
-                        $status = "❌ Add failed: $message"
-                    }
+                Invoke-MgGraphRequest -Method POST -Uri $uri -Body $body -ContentType "application/json" -ErrorAction Stop
 
-                    $result += [PSCustomObject]@{
-                        UserPrincipalName = $upn
-                        GroupName         = $group.DisplayName
-                        Status            = $status
-                    }
+                $result += [PSCustomObject]@{
+                    UserUPN   = $upn
+                    GroupName = $group.DisplayName
+                    Status    = "✅ Added successfully"
                 }
             }
             catch {
+                $msg = $_.Exception.Message
+                if ($msg -match "Insufficient privileges") {
+                    $status = "⚠️ Permission denied"
+                } elseif ($msg -match "BadRequest") {
+                    $status = "❌ Invalid request (check group type or membership)"
+                } else {
+                    $status = "❌ Group error: $msg"
+                }
+
                 $result += [PSCustomObject]@{
-                    UserPrincipalName = $upn
-                    GroupName         = $gid
-                    Status            = "❌ Group lookup failed: $($_.Exception.Message)"
+                    UserUPN   = $upn
+                    GroupName = $group.DisplayName
+                    Status    = $status
                 }
             }
         }
     }
     catch {
         $result += [PSCustomObject]@{
-            UserPrincipalName = $upn
-            GroupName         = "N/A"
-            Status            = "❌ Script error: $($_.Exception.Message)"
+            UserUPN   = $upn
+            GroupName = "N/A"
+            Status    = "❌ General error: $($_.Exception.Message)"
         }
     }
 }
@@ -154,9 +138,9 @@ foreach ($upn in $UserUPNs) {
 # --- Always output clean JSON for the app ---
 if (-not $result) {
     $result = @([PSCustomObject]@{
-        UserPrincipalName = "None"
-        GroupName         = "None"
-        Status            = "No operations performed"
+        UserUPN   = "None"
+        GroupName = "None"
+        Status    = "No operations performed"
     })
 }
 

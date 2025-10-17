@@ -9,11 +9,12 @@ from PyQt6.QtWidgets import (
     QFormLayout, QDialog, QListWidgetItem, QDialogButtonBox, QListWidget
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
-from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor
+from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush
 from PyQt6 import QtGui, QtCore
 from faker import Faker
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
 
 class ClickableCard(QFrame):
     clicked = pyqtSignal()
@@ -25,6 +26,7 @@ class ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
 
 class PowerShellLoggerWorker(QThread):
     output = pyqtSignal(str)
@@ -69,6 +71,7 @@ class PowerShellLoggerWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorkerWithParam(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -97,6 +100,7 @@ class PowerShellWorkerWithParam(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorker(QThread):
     finished = pyqtSignal(str, str)  # status, message
 
@@ -115,9 +119,10 @@ class PowerShellWorker(QThread):
         except Exception as e:
             self.finished.emit("error", str(e))
 
+
 class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)          # live log lines
-    finished = pyqtSignal(str, str)   # status, message
+    output = pyqtSignal(str)  # live log lines
+    finished = pyqtSignal(str, str)  # status, message
 
     def __init__(self, command):
         super().__init__()
@@ -146,6 +151,7 @@ class StreamingPowerShellWorker(QThread):
 
         except Exception as e:
             self.finished.emit("error", str(e))
+
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -213,6 +219,8 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
+
+# --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -244,25 +252,7 @@ class CompareGroupsWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-class GroupsWorker(QThread):
-    result_ready = pyqtSignal(str, str)  # stdout, stderr
 
-    def __init__(self, command):
-        super().__init__()
-        self.command = command
-
-    def run(self):
-        import subprocess
-        process = subprocess.Popen(
-            self.command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        stdout, stderr = process.communicate()
-        self.result_ready.emit(stdout, stderr)
-
-# --- Main Dialog ---
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
         super().__init__(parent)
@@ -415,182 +405,10 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-class AssignGroupsDialog(QDialog):
-    def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
-        super().__init__(parent)
-        self.source_user = source_user
-        self.target_user = target_user
-        self.missing_groups = missing_groups or []
 
-        self.setWindowTitle(f"Assign Groups from {source_user} → {target_user}")
-        self.setMinimumWidth(700)
-        layout = QVBoxLayout(self)
-
-        info = QLabel(f"Select which groups from <b>{source_user}</b> should be assigned to <b>{target_user}</b>:")
-        layout.addWidget(info)
-
-        # --- Table with checkboxes
-        self.table = QTableWidget(len(self.missing_groups), 2)
-        self.table.setHorizontalHeaderLabels(["Assign", "Group Name"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(0, 70)  # make checkbox column narrow
-        self.table.horizontalHeader().setStretchLastSection(True)
-
-        for i, group in enumerate(self.missing_groups):
-            chk_item = QTableWidgetItem()
-            chk_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
-            chk_item.setCheckState(Qt.CheckState.Unchecked)  # start empty
-            self.table.setItem(i, 0, chk_item)
-            self.table.setItem(i, 1, QTableWidgetItem(group))
-
-        layout.addWidget(self.table)
-
-        # --- Buttons
-        self.assign_btn = QPushButton("Assign Selected Groups")
-        self.assign_btn.clicked.connect(self.start_assignment)
-        layout.addWidget(self.assign_btn)
-
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.close)
-        layout.addWidget(self.close_btn)
-
-    # --- Trigger background worker ---
-    def start_assignment(self):
-        selected_groups = [
-            self.table.item(i, 1).text()
-            for i in range(self.table.rowCount())
-            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
-        ]
-
-        if not selected_groups:
-            QMessageBox.warning(self, "No selection", "Please select at least one group to assign.")
-            return
-
-        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "assign_missing_groups.ps1")
-
-        self.assign_btn.setEnabled(False)
-        self.assign_btn.setText("⏳ Assigning...")
-
-        self.worker = AssignGroupsWorker(self.source_user, self.target_user, selected_groups, script_path)
-        self.worker.finished.connect(self.on_assignment_done)
-        self.worker.error.connect(self.on_assignment_error)
-        self.worker.start()
-
-    # --- Display formatted results ---
-    def on_assignment_done(self, result):
-        self.assign_btn.setEnabled(True)
-        self.assign_btn.setText("Assign Selected Groups")
-
-        if not result:
-            QMessageBox.information(self, "Assignment Results", "No results were returned.")
-            return
-
-        # --- Normalize result safely ---
-        normalized = []
-        if isinstance(result, str):
-            # Try JSON decode if possible
-            try:
-                parsed = json.loads(result)
-                if isinstance(parsed, list):
-                    normalized = parsed
-                elif isinstance(parsed, dict):
-                    normalized = [parsed]
-                else:
-                    normalized = [{"GroupName": "N/A", "Status": str(parsed)}]
-            except Exception:
-                normalized = [{"GroupName": "N/A", "Status": result}]
-        elif isinstance(result, list):
-            for item in result:
-                if isinstance(item, dict):
-                    normalized.append(item)
-                else:
-                    normalized.append({"GroupName": "N/A", "Status": str(item)})
-        elif isinstance(result, dict):
-            normalized = [result]
-        else:
-            normalized = [{"GroupName": "N/A", "Status": str(result)}]
-
-        # --- Build HTML-based formatted view ---
-        html_result = ""
-        for r in normalized:
-            group = r.get("GroupName", "N/A")
-            status = r.get("Status", "")
-
-            color = "black"
-            if "✅" in status:
-                color = "green"
-            elif "❌" in status:
-                color = "red"
-            elif "⚠️" in status:
-                color = "orange"
-
-            html_result += f"<b>{group}</b> → <span style='color:{color};'>{status}</span><br>"
-
-        # --- Scrollable dialog with Copy button ---
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Assignment Results")
-        dialog.setMinimumSize(550, 450)
-
-        layout = QVBoxLayout(dialog)
-        results_view = QTextEdit()
-        results_view.setReadOnly(True)
-        results_view.setHtml(html_result)
-        layout.addWidget(results_view)
-
-        btn_copy = QPushButton("Copy to Clipboard")
-        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(
-            "\n".join([f"{r.get('GroupName')} → {r.get('Status')}" for r in normalized])
-        ))
-        layout.addWidget(btn_copy)
-
-        dialog.exec()
-
-    def on_assignment_error(self, err):
-        self.assign_btn.setEnabled(True)
-        self.assign_btn.setText("Assign Selected Groups")
-        QMessageBox.critical(self, "Error", f"Assignment failed:\n{err}")
-
+# --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
-
-    def __init__(self, source_user, target_user, groups, script_path):
-        super().__init__()
-        self.source_user = source_user
-        self.target_user = target_user
-        self.groups = groups
-        self.script_path = script_path
-
-    def run(self):
-        try:
-            # Serialize groups as JSON (safe for spaces/special chars)
-            groups_json = json.dumps(self.groups)
-
-            cmd = [
-                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", self.script_path,
-                "-SourceUserUPN", self.source_user,
-                "-TargetUserUPN", self.target_user,
-                "-GroupsJson", groups_json
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                raise Exception(result.stderr.strip() or "Unknown PowerShell error")
-
-            try:
-                data = json.loads(result.stdout)
-            except Exception:
-                data = [{"GroupName": "N/A", "Status": result.stdout.strip()}]
-
-            self.finished.emit(data)
-
-        except Exception as e:
-            self.error.emit(str(e))
-
-class AssignAccessPackagesWorker(QThread):
-    finished = pyqtSignal(object)
+    finished = pyqtSignal(str, str)  # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -600,6 +418,268 @@ class AssignAccessPackagesWorker(QThread):
     def run(self):
         import subprocess
         try:
+            result = subprocess.run(
+                self.command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8"
+            )
+            if result.returncode != 0:
+                # Emit error if PowerShell failed
+                self.error.emit(result.stderr.strip() or "Unknown PowerShell error")
+            else:
+                # Emit success output
+                self.finished.emit(result.stdout.strip(), result.stderr.strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class AssignGroupsDialog(QDialog):
+    def __init__(self, parent=None, user_upns=None, csv_path=None):
+        super().__init__(parent)
+
+        self.user_upns = user_upns or []
+        self.groups_csv_path = csv_path
+
+        self.setWindowTitle("Assign Group(s)")
+        self.setMinimumWidth(900)
+        self.setMinimumHeight(500)
+
+        # 🌟 Main vertical layout
+        main_layout = QVBoxLayout(self)
+
+        # ───────────── Panels Zone (Users + Groups) ─────────────
+        panels_layout = QHBoxLayout()
+
+        # LEFT: Selected Users
+        left_layout = QVBoxLayout()
+        left_layout.addWidget(QLabel("Selected User(s)"))
+
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        left_layout.addWidget(self.user_list)
+        panels_layout.addLayout(left_layout, 1)
+
+        # RIGHT: Available Groups
+        right_layout = QVBoxLayout()
+        right_layout.addWidget(QLabel("Available Groups"))
+
+        import pandas as pd
+        try:
+            df = pd.read_csv(self.groups_csv_path, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read Groups CSV:\n{e}")
+            self.close()
+            return
+
+        # Normalize columns
+        df.columns = [c.strip().lower() for c in df.columns]
+        id_col = next((c for c in df.columns if "object" in c and "id" in c), None)
+        name_col = next((c for c in df.columns if "display" in c and "name" in c), None)
+        if not id_col or not name_col:
+            QMessageBox.critical(self, "Invalid CSV", "Groups CSV missing Object ID or Display Name columns.")
+            self.close()
+            return
+
+        self.groups = [{"DisplayName": row[name_col], "ObjectId": row[id_col]} for _, row in df.iterrows()]
+
+        # Search bar
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search groups...")
+        self.search_box.textChanged.connect(self.filter_groups)
+        right_layout.addWidget(self.search_box)
+
+        # Table
+        self.table = QTableWidget(len(self.groups), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Group Name"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 80)
+        self.populate_table(self.groups)
+        right_layout.addWidget(self.table)
+        panels_layout.addLayout(right_layout, 2)
+
+        # Add the panels to main layout
+        main_layout.addLayout(panels_layout)
+
+        # ───────────── BUTTONS (Bottom-Centered) ─────────────
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+
+        self.ok_button = QPushButton("Assign Selected Group(s)")
+        self.ok_button.clicked.connect(self.start_assignment)
+        self.ok_button.setStyleSheet("font-weight: 600;")
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch(1)
+
+        main_layout.addLayout(button_layout)
+
+    # ----------------------------------------------------------------------
+    def populate_table(self, groups):
+        self.table.setRowCount(len(groups))
+        for i, grp in enumerate(groups):
+            chk_item = QTableWidgetItem()
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, chk_item)
+            self.table.setItem(i, 1, QTableWidgetItem(grp.get("DisplayName", "Unnamed")))
+
+    def filter_groups(self, text):
+        text = text.lower()
+        for row in range(self.table.rowCount()):
+            grp_name = self.table.item(row, 1).text().lower()
+            self.table.setRowHidden(row, text not in grp_name)
+
+    # ----------------------------------------------------------------------
+    def start_assignment(self):
+        selected_names = [
+            self.table.item(i, 1).text()
+            for i in range(self.table.rowCount())
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected_names:
+            QMessageBox.warning(self, "No Selection", "Please select at least one group.")
+            return
+
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "assign_users_to_groups.ps1"
+        )
+
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Assigning...")
+
+        command = [
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-UserUPNs", ",".join(self.user_upns),
+            "-GroupIDs", ",".join([
+                grp["ObjectId"] for i, grp in enumerate(self.groups)
+                if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+            ])
+        ]
+
+        self.worker = AssignGroupsWorker(command)
+        self.worker.finished.connect(self.on_assignment_done)
+        self.worker.error.connect(self.on_assignment_error)
+        self.worker.start()
+
+    # ----------------------------------------------------------------------
+    def on_assignment_done(self, stdout: str, stderr: str = ""):
+        import re, json
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Assign Selected Group(s)")
+
+        if stderr.strip():
+            QMessageBox.warning(self, "PowerShell Warning", stderr)
+
+        # Parse JSON tail
+        def extract_json_tail(text: str) -> str:
+            if not text:
+                return ""
+            m = re.search(r'\[\s*(?:.|\n|\r)*\]\s*$', text, re.DOTALL)
+            if m: return m.group(0)
+            m = re.search(r'\{\s*(?:.|\n|\r)*\}\s*$', text, re.DOTALL)
+            if m: return m.group(0)
+            for ch in ('[', '{'):
+                pos = text.rfind(ch)
+                if pos != -1:
+                    return text[pos:].strip()
+            return ""
+
+        json_text = extract_json_tail(stdout)
+        results = []
+        if json_text:
+            try:
+                payload = json.loads(json_text)
+                if isinstance(payload, dict):
+                    results = [payload]
+                elif isinstance(payload, list):
+                    results = payload
+            except Exception:
+                pass
+
+        if not results:
+            results = [{
+                "UserUPN": "N/A",
+                "GroupName": "N/A",
+                "Status": (stdout or "").strip()
+            }]
+
+        # --- HTML table view ---
+        def row_html(r):
+            user = r.get("UserUPN", "N/A")
+            group = r.get("GroupName", "N/A")
+            st = r.get("Status", "")
+            color = "#222"
+            st_lower = st.lower()
+            if "✅" in st or "success" in st_lower or "added" in st_lower:
+                color = "#0a7a0a"
+            elif "❌" in st or "fail" in st_lower or "error" in st_lower:
+                color = "#c00"
+            elif "⚠" in st or "already" in st_lower:
+                color = "#b66a00"
+            return f"<tr><td>{user}</td><td>{group}</td><td style='color:{color}'>{st}</td></tr>"
+
+        rows = "\n".join(row_html(r) for r in results)
+        html = f"""
+        <html><head><style>
+          body {{ font-family: -apple-system, Helvetica, Arial; font-size: 13px; color: #222; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ padding: 6px 10px; border-bottom: 1px solid #e5e5e5; text-align: left; }}
+          th {{ background: #f6f6f6; }}
+        </style></head><body>
+          <h3>Assignment Results</h3>
+          <table>
+            <tr><th>User</th><th>Group</th><th>Status</th></tr>
+            {rows}
+          </table>
+        </body></html>
+        """
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Assignment Results")
+        dlg.setMinimumSize(700, 420)
+
+        layout = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setHtml(html)
+        layout.addWidget(view)
+
+        btn_close = QPushButton("Close")
+        btn_close.setStyleSheet("font-weight: bold; padding: 6px;")
+        btn_close.clicked.connect(lambda: (dlg.close(), self.close()))
+        layout.addWidget(btn_close)
+
+        dlg.exec()
+
+    def on_assignment_error(self, err):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Assign Selected Group(s)")
+        QMessageBox.critical(self, "PowerShell Error", err)
+
+
+# --- Access Package ---#
+class AssignAccessPackagesWorker(QThread):
+    finished = pyqtSignal(str, str)  # stdout, stderr
+    error = pyqtSignal(str)
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        import subprocess, os, tempfile, datetime, shlex
+        try:
+            # run
             process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,
@@ -608,152 +688,257 @@ class AssignAccessPackagesWorker(QThread):
             )
             stdout, stderr = process.communicate()
 
-            if stderr.strip():
-                self.error.emit(stderr.strip())
-                return
-
-            self.finished.emit(stdout)
+            # write a debug log
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            log_path = os.path.join(tempfile.gettempdir(), f"ap_debug_{ts}.log")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("COMMAND (list):\n")
+                for i, part in enumerate(self.command):
+                    f.write(f"  [{i}] {repr(part)}\n")
+                f.write("\nCOMMAND (shell):\n")
+                f.write(" ".join(shlex.quote(x) for x in self.command) + "\n\n")
+                f.write("=== STDOUT ===\n")
+                f.write(stdout or "")
+                f.write("\n=== STDERR ===\n")
+                f.write(stderr or "")
+            # return both streams
+            self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
 
+
 class AssignAccessPackagesDialog(QDialog):
-    def __init__(self, parent=None, user_upn=None, json_path=None):
+    def __init__(self, parent=None, user_upns=None, json_path=None):
         super().__init__(parent)
-        self.user_upn = user_upn
+
+        self.user_upns = user_upns or []
         self.json_path = json_path
 
-        self.setWindowTitle(f"Assign Access Packages to {user_upn}")
-        self.setMinimumWidth(700)
-        layout = QVBoxLayout(self)
+        self.setWindowTitle("Assign Access Package(s)")
+        self.setMinimumWidth(900)
+        self.setMinimumHeight(500)
 
-        info = QLabel(f"Select Access Packages to assign to <b>{user_upn}</b>:")
-        layout.addWidget(info)
+        # 🌟 Main vertical layout
+        main_layout = QVBoxLayout(self)
 
-        # --- Load Access Packages from JSON file
+        # ───────────── Panels Zone (Users + Packages) ─────────────
+        panels_layout = QHBoxLayout()
+
+        # LEFT: Selected Users
+        left_layout = QVBoxLayout()
+        left_label = QLabel("Selected User(s)")
+        left_layout.addWidget(left_label)
+
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        left_layout.addWidget(self.user_list)
+        panels_layout.addLayout(left_layout, 1)
+
+        # RIGHT: Access Packages
+        right_layout = QVBoxLayout()
+        right_label = QLabel("Available Access Packages")
+        right_layout.addWidget(right_label)
+
         try:
             with open(self.json_path, "r", encoding="utf-8") as f:
-                packages = json.load(f)
+                self.access_packages = json.load(f)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load JSON:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to load AccessPackages.json:\n{e}")
             self.close()
             return
 
-        # --- Table setup
-        self.table = QTableWidget(len(packages), 2)
-        self.table.setHorizontalHeaderLabels(["Assign", "Access Package"])
+        # Search bar
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search access packages...")
+        self.search_box.textChanged.connect(self.filter_access_packages)
+        right_layout.addWidget(self.search_box)
+
+        # Table
+        self.table = QTableWidget(len(self.access_packages), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Access Package Name"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 80)
+        self.populate_table(self.access_packages)
+        right_layout.addWidget(self.table)
 
+        panels_layout.addLayout(right_layout, 2)
+
+        # Add the panel zone to main layout
+        main_layout.addLayout(panels_layout)
+
+        # ───────────── BUTTONS (Bottom-Centered Like Missing Groups) ─────────────
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+
+        self.ok_button = QPushButton("Assign Access Package(s)")
+        self.ok_button.clicked.connect(self.start_assignment)
+        self.ok_button.setStyleSheet("font-weight: 600;")
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch(1)
+
+        # Add the buttons row at the very bottom
+        main_layout.addLayout(button_layout)
+
+    # ----------------------------------------------------------------------
+    def populate_table(self, packages):
+        self.table.setRowCount(len(packages))
         for i, pkg in enumerate(packages):
             chk_item = QTableWidgetItem()
             chk_item.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(i, 0, chk_item)
-            name = pkg.get("AccessPackageName") or "Unnamed"
-            self.table.setItem(i, 1, QTableWidgetItem(name))
+            self.table.setItem(i, 1, QTableWidgetItem(pkg.get("AccessPackageName", "Unnamed")))
 
-        layout.addWidget(self.table)
+    def filter_access_packages(self, text):
+        text = text.lower()
+        for row in range(self.table.rowCount()):
+            pkg_name = self.table.item(row, 1).text().lower()
+            self.table.setRowHidden(row, text not in pkg_name)
 
-        # --- Buttons
-        self.assign_btn = QPushButton("Assign Selected Access Packages")
-        self.assign_btn.clicked.connect(self.start_assignment)
-        layout.addWidget(self.assign_btn)
-
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.close)
-        layout.addWidget(self.close_btn)
-
-    # --------------------------------------------------------------------------
-    # Run PowerShell asynchronously (non-blocking)
-    # --------------------------------------------------------------------------
+    # ----------------------------------------------------------------------
     def start_assignment(self):
-        selected_packages = [
+        selected_names = [
             self.table.item(i, 1).text()
             for i in range(self.table.rowCount())
             if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
         ]
 
-        if not selected_packages:
+        if not selected_names:
             QMessageBox.warning(self, "No Selection", "Please select at least one Access Package.")
             return
 
-        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", "assign_access_packages.ps1")
-        # Read the full JSON to get both Name + ID
-        with open(self.json_path, "r", encoding="utf-8") as f:
-            all_packages = json.load(f)
+        selected_package_name = selected_names[0]
 
-        selected_full = [pkg for pkg in all_packages if pkg["AccessPackageName"] in selected_packages]
-        json_data = json.dumps(selected_full)
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "assign_access_packages.ps1"
+        )
 
+        # 💥 Now build command
         command = [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
-            "-UserUPN", self.user_upn,
-            "-AccessPackagesJson", json_data
+            "-UserUPNs", ",".join(self.user_upns),
+            "-AccessPackageName", selected_package_name
         ]
 
-        # Disable button and show progress text
-        self.assign_btn.setEnabled(False)
-        self.assign_btn.setText("⏳ Assigning...")
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Assigning...")
 
-        # Run PowerShell asynchronously
         self.worker = AssignAccessPackagesWorker(command)
         self.worker.finished.connect(self.on_assignment_done)
         self.worker.error.connect(self.on_assignment_error)
         self.worker.start()
 
-    # --------------------------------------------------------------------------
-    # Handle completion (display formatted results)
-    # --------------------------------------------------------------------------
-    def on_assignment_done(self, stdout):
-        self.assign_btn.setEnabled(True)
-        self.assign_btn.setText("Assign Selected Access Packages")
+    # ----------------------------------------------------------------------
+    def on_assignment_done(self, stdout: str, stderr: str = ""):
+        import re, json
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton, QApplication
 
-        try:
-            result = json.loads(stdout)
-            if isinstance(result, dict):
-                result = [result]
-        except Exception:
-            result = [{"AccessPackageName": "N/A", "Status": stdout.strip()}]
+        # Re-enable button and reset text
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Assign Access Package(s)")
 
-        # --- Build HTML output
-        html_result = ""
-        for r in result:
-            name = r.get("AccessPackageName", "N/A")
-            status = r.get("Status", "")
-            color = "black"
-            if "✅" in status:
-                color = "green"
-            elif "⚠️" in status:
-                color = "orange"
-            elif "❌" in status:
-                color = "red"
-            html_result += f"<b>{name}</b> → <span style='color:{color};'>{status}</span><br>"
+        if stderr.strip():
+            QMessageBox.warning(self, "PowerShell warning", stderr)
 
-        # --- Display results in a dialog
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Assignment Results")
-        dialog.setMinimumSize(550, 400)
-        layout = QVBoxLayout(dialog)
+        # --- Try parse JSON from stdout ---
+        def extract_json_tail(text: str) -> str:
+            if not text:
+                return ""
+            m = re.search(r'\[\s*(?:.|\n|\r)*\]\s*$', text, re.DOTALL)
+            if m: return m.group(0)
+            m = re.search(r'\{\s*(?:.|\n|\r)*\}\s*$', text, re.DOTALL)
+            if m: return m.group(0)
+            for ch in ('[', '{'):
+                pos = text.rfind(ch)
+                if pos != -1:
+                    return text[pos:].strip()
+            return ""
 
+        results = []
+        json_text = extract_json_tail(stdout)
+        if json_text:
+            try:
+                payload = json.loads(json_text)
+                if isinstance(payload, dict):
+                    results = [payload]
+                elif isinstance(payload, list):
+                    results = payload
+            except Exception:
+                pass
+
+        if not results:
+            results = [{
+                "UserUPN": "N/A",
+                "AccessPackageName": "N/A",
+                "Status": (stdout or "").strip()
+            }]
+
+        # --- Build HTML Table ---
+        def row_html(r):
+            user = r.get("UserUPN", "N/A")
+            pkg = r.get("AccessPackageName", "N/A")
+            st = r.get("Status", "")
+            color = "#222"
+            st_lower = st.lower()
+            if "✅" in st or "success" in st_lower or "created" in st_lower:
+                color = "#0a7a0a"
+            elif "❌" in st or "fail" in st_lower or "error" in st_lower:
+                color = "#c00"
+            elif "⚠" in st or "already" in st_lower or "warning" in st_lower:
+                color = "#b66a00"
+            return f"<tr><td>{user}</td><td>{pkg}</td><td style='color:{color}'>{st}</td></tr>"
+
+        rows = "\n".join(row_html(r) for r in results)
+        html = f"""
+        <html><head><style>
+          body {{ font-family: -apple-system, Helvetica, Arial; font-size: 13px; color: #222; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ padding: 6px 10px; border-bottom: 1px solid #e5e5e5; text-align: left; }}
+          th {{ background: #f6f6f6; }}
+        </style></head><body>
+          <h3>Assignment Results</h3>
+          <table>
+            <tr><th>User</th><th>Access Package</th><th>Status</th></tr>
+            {rows}
+          </table>
+        </body></html>
+        """
+
+        # --- Results Dialog ---
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Assignment Results")
+        dlg.setMinimumSize(700, 420)
+
+        layout = QVBoxLayout(dlg)
         view = QTextEdit()
         view.setReadOnly(True)
-        view.setHtml(html_result)
+        view.setHtml(html)
         layout.addWidget(view)
 
-        btn_copy = QPushButton("Copy to Clipboard")
-        btn_copy.clicked.connect(lambda: QApplication.clipboard().setText(stdout.strip()))
-        layout.addWidget(btn_copy)
+        # --- Close Button (closes both dialogs) ---
+        btn_close = QPushButton("Close")
+        btn_close.setStyleSheet("font-weight: bold; padding: 6px;")
+        btn_close.clicked.connect(lambda: (dlg.close(), self.close()))
+        layout.addWidget(btn_close)
 
-        dialog.exec()
+        dlg.exec()
 
-    # --------------------------------------------------------------------------
-    # Handle errors
-    # --------------------------------------------------------------------------
     def on_assignment_error(self, err):
-        self.assign_btn.setEnabled(True)
-        self.assign_btn.setText("Assign Selected Access Packages")
-        QMessageBox.critical(self, "Error", f"Assignment failed:\n\n{err}")
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("OK")
+        QMessageBox.critical(self, "PowerShell Error", err)
 
+
+# --- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
@@ -1636,7 +1821,8 @@ class OffboardManager(QWidget):
         # Console output
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
+        self.console_output.setStyleSheet(
+            "background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
         console_layout.addWidget(self.console_output)
 
         # Populate logs at startup
@@ -1654,7 +1840,8 @@ class OffboardManager(QWidget):
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
-        self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
+        self.btn_create_user.clicked.connect(
+            lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
@@ -1822,24 +2009,40 @@ class OffboardManager(QWidget):
                     if hasattr(self, "field_usagelocation"):
                         if self.field_usagelocation.count() == 0:
                             self.field_usagelocation.addItems([
-                            "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
-                            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR",
-                            "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN", "CX",
-                            "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ", "DM",
-                            "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF",
-                            "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN",
-                            "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM",
-                            "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV",
-                            "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT",
-                            "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM",
-                            "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK",
-                            "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU",
-                            "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS", "SC",
-                            "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR", "SJ",
-                            "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN", "TR",
-                            "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
-                            "VI", "WF", "EH", "YE", "ZM", "ZW"
-                        ])
+                                "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT",
+                                "AZ",
+                                "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV",
+                                "BR",
+                                "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN",
+                                "CX",
+                                "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ",
+                                "DM",
+                                "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF",
+                                "PF",
+                                "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG",
+                                "GN",
+                                "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE",
+                                "IM",
+                                "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA",
+                                "LV",
+                                "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML",
+                                "MT",
+                                "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ",
+                                "MM",
+                                "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM",
+                                "PK",
+                                "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO",
+                                "RU",
+                                "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS",
+                                "SC",
+                                "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR",
+                                "SJ",
+                                "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN",
+                                "TR",
+                                "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN",
+                                "VG",
+                                "VI", "WF", "EH", "YE", "ZM", "ZW"
+                            ])
                         self.field_usagelocation.setCurrentText("")
 
             else:
@@ -2022,7 +2225,7 @@ class OffboardManager(QWidget):
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
             # Create worker and connect signal
-            self.ps_worker = GroupsWorker(command)
+            self.ps_worker = AssignGroupsWorker(command)
             self.ps_worker.result_ready.connect(self._on_ps_results_ready)
             self.ps_worker.finished.connect(lambda: QApplication.restoreOverrideCursor())
             self.ps_worker.start()
@@ -2113,9 +2316,6 @@ class OffboardManager(QWidget):
             self.disable_selected_user(upns)
 
     def confirm_assign_groups(self):
-        """Open dialog to assign selected users to one or more groups."""
-
-        # --- Collect selected UPNs from Identity Table ---
         selected_items = self.identity_table.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "No Selection", "Please select at least one user.")
@@ -2131,130 +2331,18 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No UPNs", "No valid UPNs found in the selection.")
             return
 
-        # --- Retrieve current Groups CSV path from app ---
         groups_path = getattr(self, "current_groups_csv_path", None)
         if not groups_path or not os.path.exists(groups_path):
-            # fallback to Database_Groups
             groups_dir = os.path.join(os.path.dirname(__file__), "Database_Groups")
             csv_files = [f for f in os.listdir(groups_dir) if f.lower().endswith(".csv")]
             if not csv_files:
-                QMessageBox.critical(self, "Missing CSV", "No CSV found in Database_Groups folder.")
+                QMessageBox.critical(self, "Missing CSV", "No Groups CSV found in Database_Groups folder.")
                 return
             groups_path = os.path.join(groups_dir,
                                        max(csv_files, key=lambda f: os.path.getmtime(os.path.join(groups_dir, f))))
 
-        # --- Load the Groups CSV ---
-        import pandas as pd
-        try:
-            df = pd.read_csv(groups_path, dtype=str).fillna("")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to read Groups CSV:\n{e}")
-            return
-
-        # --- Column normalization ---
-        df.columns = [c.strip().lower() for c in df.columns]
-        id_col = next((c for c in df.columns if "object" in c and "id" in c), None)
-        name_col = next((c for c in df.columns if "display" in c and "name" in c), None)
-        type_col = next((c for c in df.columns if "type" in c), None)
-
-        if not id_col or not name_col:
-            QMessageBox.critical(self, "Invalid CSV",
-                                 "The Groups CSV must include 'Object ID' and 'Display Name' columns.")
-            return
-
-        # --- Filter out Dynamic groups ---
-        if type_col:
-            df = df[~df[type_col].str.lower().str.contains("dynamic", na=False)]
-
-        if df.empty:
-            QMessageBox.information(self, "No Groups", "No assignable (non-dynamic) groups found.")
-            return
-
-        # --- Build Dialog UI ---
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Assign Groups")
-        dialog.setMinimumSize(700, 500)
-        main_layout = QVBoxLayout(dialog)
-
-        split_layout = QHBoxLayout()
-        main_layout.addLayout(split_layout)
-
-        # Left column: users
-        users_box = QGroupBox("Selected User(s)")
-        users_layout = QVBoxLayout(users_box)
-        users_text = QTextEdit()
-        users_text.setPlainText("\n".join(upns))
-        users_text.setReadOnly(True)
-        users_layout.addWidget(users_text)
-        split_layout.addWidget(users_box, 1)
-
-        # Right column: groups with search
-        groups_box = QGroupBox("Available Groups")
-        groups_layout = QVBoxLayout(groups_box)
-
-        search_bar = QLineEdit()
-        search_bar.setPlaceholderText("Search groups...")
-        groups_layout.addWidget(search_bar)
-
-        list_widget = QListWidget()
-        for _, row in df.iterrows():
-            display_name = row[name_col]
-            group_id = row[id_col]
-            item = QListWidgetItem(f"{display_name}  ({group_id})")
-            item.setCheckState(Qt.CheckState.Unchecked)
-            list_widget.addItem(item)
-        groups_layout.addWidget(list_widget)
-        split_layout.addWidget(groups_box, 2)
-
-        def filter_groups(text):
-            text = text.lower()
-            for i in range(list_widget.count()):
-                item = list_widget.item(i)
-                item.setHidden(text not in item.text().lower())
-
-        search_bar.textChanged.connect(filter_groups)
-
-        # Buttons
-        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        main_layout.addWidget(btn_box)
-        btn_box.accepted.connect(dialog.accept)
-        btn_box.rejected.connect(dialog.reject)
-
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        # Collect selected groups
-        selected_groups = [
-            list_widget.item(i).text() for i in range(list_widget.count())
-            if list_widget.item(i).checkState() == Qt.CheckState.Checked
-        ]
-        if not selected_groups:
-            QMessageBox.warning(self, "No Groups", "Please select at least one group.")
-            return
-
-        # Extract group IDs
-        group_ids = []
-        for entry in selected_groups:
-            if "(" in entry and ")" in entry:
-                gid = entry.split("(")[-1].replace(")", "").strip()
-                if gid and gid != "N/A":
-                    group_ids.append(gid)
-
-        if not group_ids:
-            QMessageBox.warning(self, "No IDs", "Could not extract valid group IDs.")
-            return
-
-        confirm = QMessageBox.question(
-            self,
-            "Confirm Assignment",
-            f"Assign {len(upns)} user(s) to {len(group_ids)} group(s)?",
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
-        )
-        if confirm != QMessageBox.StandardButton.Ok:
-            return
-
-        # Call PowerShell
-        self.assign_users_to_groups(upns, group_ids)
+        dlg = AssignGroupsDialog(self, user_upns=upns, csv_path=groups_path)
+        dlg.exec()
 
     def confirm_assign_access_packages(self):
         selected_rows = self.identity_table.selectionModel().selectedRows()
@@ -2262,19 +2350,32 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No Selection", "Please select at least one user.")
             return
 
-        # 👇 Set this to the actual column index for the UPN in your table
-        upn_col = 4
+        # 👇 Collect all UPNs from selected rows
+        upn_col = 4  # Adjust to your actual UPN column index
+        user_upns = []
 
         for row in selected_rows:
             item = self.identity_table.item(row.row(), upn_col)
             if not item:
                 continue
             user_upn = item.text().strip()
+            if user_upn:
+                user_upns.append(user_upn)
 
-            json_path = os.path.join(os.path.dirname(__file__), "JSONs", "AccessPackages.json")
+        if not user_upns:
+            QMessageBox.warning(self, "Error", "No valid user UPNs found.")
+            return
 
-            dialog = AssignAccessPackagesDialog(self, user_upn=user_upn, json_path=json_path)
-            dialog.exec()
+        # Load the Access Package JSON path
+        json_path = os.path.join(
+            os.path.dirname(__file__),
+            "JSONs",
+            "AccessPackages.json"
+        )
+
+        # ✅ Pass the correct list to the dialog
+        dialog = AssignAccessPackagesDialog(self, user_upns=user_upns, json_path=json_path)
+        dialog.exec()
 
     def on_script_finished(self, msg):
         # self.refresh_csv_lists()
@@ -2403,7 +2504,6 @@ class OffboardManager(QWidget):
             self.refresh_csv_lists("apps")
         elif idx == 3:
             self.refresh_csv_lists("groups")
-
 
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
@@ -3532,7 +3632,8 @@ class OffboardManager(QWidget):
             "Password", "Job title", "Company name", "Department", "Employee ID", "City",
             "Country or region", "State or province", "Office location", "Street address",
             "Manager", "Sponsors", "Usage location", "ZIP or postal code", "Business phone"
-            "Mobile phone", "Other emails", "Age group", "Consent provided for minor", "Access Package"
+                                                                           "Mobile phone", "Other emails", "Age group",
+            "Consent provided for minor", "Access Package"
         ]
 
         try:
@@ -4493,6 +4594,7 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

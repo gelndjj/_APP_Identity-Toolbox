@@ -1,54 +1,52 @@
 # 🛠️ Identity Toolbox
 
-A modern **PyQt6 + PowerShell desktop app** designed to simplify **Microsoft Entra ID (Azure AD)** user lifecycle management.  
-Built for IT administrators to streamline onboarding, offboarding, and user attribute management with a clean GUI.
+A modern **PyQt6 + PowerShell** desktop app for **Microsoft Entra ID** administration.  
+It gives IT teams clickable dashboards and tools to manage **users, groups, devices, apps, and access packages**—all backed by Microsoft Graph.
 
 ---
 
 ## ✨ Features
 
-- **🔑 Create Users**  
-  - Full user creation via Microsoft Graph API  
-  - Extended attributes supported: Job Title, Department, Office, Hire Date, Usage Location, Age Group, etc.  
-  - Automatic MailNickname generation  
+- **👤 Users**
+  - Create & onboard users via Microsoft Graph
+  - Bulk CSV import/export with built-in templates
+  - Extended attributes: Department, Job Title, Company, Hire Date, Usage Location, Age Group, etc.
+  - Automatic MailNickname/UPN helpers
+  - Random test user generator (Faker)
 
-- **📑 Bulk CSV Integration**  
-  - Import/export user data through CSV  
-  - Supports all extended attributes  
-  - Custom CSV templates  
+- **👥 Groups**
+  - **User-to-user group comparison** with “Assign Missing Groups…” workflow
+  - Assign users to selected groups (CSV-driven list, search & multi-select)
+  - Detects dynamic/nested groups; skips dynamic membership safely
 
-- **🧩 User Templates**  
-  - Save and reapply frequently used field sets  
-  - Update existing templates  
+- **📦 Access Packages**
+  - Browse/search packages and **assign to selected users**
+  - Clean progress UI (Assigning… → Results table)
 
-- **🎲 Random User Generator**  
-  - Create test users with fake data (via Faker)  
-  - Useful for labs and demos  
+- **📊 Dashboards (clickable cards)**
+  - **Identity, Devices, Apps, Groups** dashboards
+  - Cards filter their respective tables instantly
+  - “Top …” summary tables (departments, domains, models, OS versions, publishers, etc.)
 
-- **📋 Extended Attribute Support**  
-  - Job Title, Department, Company  
-  - Business / Mobile / Fax phone numbers  
-  - Proxy Addresses, IM Addresses, Other Emails  
-  - Employee ID, Hire Date, Org Data  
-  - Parental Controls: Age Group, Consent Provided for Minor, Legal Age Classification  
-  - AccountEnabled, Usage Location, Preferred Data Location  
+- **⚡ Smooth UX**
+  - All PowerShell/Graph calls run in **QThread** workers (no UI freeze)
+  - Structured results dialogs with copy/close actions
+  - Dark-mode friendly, Mac-optimized styling
 
-- **⚡ Responsive UI**  
-  - PowerShell commands executed via background threads (QThread)  
-  - Live log output
-
-- **📦 Deployment Ready**  
-  - Can be packaged and deployed via **Microsoft Intune Company Portal**  
-  - Secure integration with **App Registration & delegated permissions**  
+- **🚀 Deployment**
+  - Packaged for **Intune Company Portal** (macOS first)
+  - Works with **App Registration & delegated permissions**
 
 ---
 
 ## 🖥️ Tech Stack
 
-- **Frontend:** Python 3.13, PyQt6  
-- **Backend:** PowerShell 7.5.2, Microsoft Graph SDK  
-- **APIs:** Microsoft Graph (`User.ReadWrite.All`, `Directory.ReadWrite.All`, `EntitlementManagement.ReadWrite.All`)  
-- **Other:** CSV handling, QThread-based workers, Faker (for random users)  
+- **Frontend:** Python (PyQt6)
+- **Automation:** PowerShell 7 + Microsoft Graph PowerShell SDK
+- **APIs:** Microsoft Graph  
+  `User.ReadWrite.All • Directory.ReadWrite.All • Group.ReadWrite.All • EntitlementManagement.ReadWrite.All`
+- **Data/Utils:** pandas (CSV), Faker, QThread workers
+- **Target platform:** macOS (Windows build planned)
 
 ---
 
@@ -97,6 +95,15 @@ python id-toolbox.py
 	•	Multi-language support
 
 ### 📸 Screenshots
+
+|      ![IdDashboard](screenshots/Id_Dashboard.png)       | ![GrpsDashboard](screenshots/Grps_Dashboard.png) |
+|:-------------------------------------------------------:|:------------------------------------------------:|
+|                   Identity Dashboard                    |                 Groups Dashboard                 |
+| ![EntraUserCreation](screenshots/EntraUserCreation.png) |       ![IdTable](screenshots/IdTable.png)        |
+|                   Entra User Creation                   |                 Identities Table                 |
+|  ![UsrGrpsComp](screenshots/UserGroupsComparison.png)   |     ![PSConsole](screenshots/PSConsole.png)      |
+|                 User Groups Comparison                  |                PowerShell Console                |
+
 
 ### ⚖️ License
 MIT License.

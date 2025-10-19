@@ -96,12 +96,12 @@ python id-toolbox.py
 
 ### 📸 Screenshots
 
-|      ![IdDashboard](screenshots/Id_Dashboard.png)       | ![GrpsDashboard](screenshots/Grps_Dashboard.png) |
+|      ![IdDashboard](Screenshots/Id_Dashboard.png)       | ![GrpsDashboard](Screenshots/Grps_Dashboard.png) |
 |:-------------------------------------------------------:|:------------------------------------------------:|
 |                   Identity Dashboard                    |                 Groups Dashboard                 |
-| ![EntraUserCreation](screenshots/EntraUserCreation.png) |       ![IdTable](screenshots/IdTable.png)        |
+| ![EntraUserCreation](Screenshots/EntraUserCreation.png) |       ![IdTable](Screenshots/IdTable.png)        |
 |                   Entra User Creation                   |                 Identities Table                 |
-|  ![UsrGrpsComp](screenshots/UserGroupsComparison.png)   |     ![PSConsole](screenshots/PSConsole.png)      |
+|  ![UsrGrpsComp](Screenshots/UserGroupsComparison.png)   |     ![PSConsole](Screenshots/PSConsole.png)      |
 |                 User Groups Comparison                  |                PowerShell Console                |
 
 

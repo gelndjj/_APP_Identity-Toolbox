@@ -88,11 +88,25 @@ python id-toolbox.py
 |--------------|------------|-----------|-------------------------|-----------|------------|--------------|------------|----------------|
 | John Doe     | John       | Doe       | john.doe@contoso.com   | Pass@123  | Engineer   | Contoso      | IT         | FR             |
 
-### 🗺️ Roadmap
-	•	Add group assignments
-	•	Add Access Package integration
-	•	Add manager/sponsor assignment during creation
-	•	Multi-language support
+## 🗺️ Roadmap
+
+| Feature                                        | Status | Description                                                            |
+|------------------------------------------------|:------:|------------------------------------------------------------------------|
+| **Group assignments (Bulk)**                   | ✅ Done | Assign groups to user(s)                |
+| **Access Package integration**                 | ✅ Done | Assign and list Entra ID Access Packages directly via Graph PowerShell |
+| **Manager / Sponsor assignment**               | ✅ Done | Add Manager and Sponsor attributes during user creation                |
+| **User group comparison**                      | ✅ Done | Compare group memberships between two users and assign missing groups  |
+| **Interactive dashboards**                     | ✅ Done | Clickable metric cards for Identities, Devices, Apps, and Groups       |
+| **Top tables in dashboards**                   | ✅ Done | Display “Top Departments”, “Top Countries”, “Top Domains”, etc.        |
+| **Bulk user creation from CSV (Drop feature)** | ✅ Done | Onboard multiple users at once using custom templates                  |
+| **Fast User Entry window**                     | ✅ Done | Pre-filled user creation form with intelligent UPN/email formatting    |
+| **Random user generator (Faker)**              | ✅ Done | Create demo users with realistic data for lab environments             |
+| **Dark Mode UI / macOS optimization**          | ✅ Done | Modern aesthetic and responsive layout for macOS                       |
+| **Multi-language support (EN/FR/ES)**          | 🟡 In Progress | Localized labels and messages, starting with French                    |
+| **Windows packaging (MSI)**                    | 🟡 In Progress | Cross-platform PyInstaller packaging for Windows users                 |
+| **Managed Identity authentication**            | 🔜 Planned | Replace delegated auth with App Registration + certificate             |
+| **MFA & TAP reporting integration**            | 🔜 Planned | Graph-based insights for MFA methods and Temporary Access Passes       |
+| **Offline CSV edit + sync back**               | 🔜 Planned | Edit CSVs offline and push updates back to Entra ID                    |
 
 ### 📸 Screenshots
 

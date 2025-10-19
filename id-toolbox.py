@@ -89,7 +89,7 @@ class PowerShellWorkerWithParam(QThread):
                     f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' -upn '{self.upn}' }}"
                 ],
                 check=True,
-                env={**os.environ, "TERM": "dumb"}  # 👈 prevent ANSI escape codes
+                env={**os.environ, "TERM": "dumb"}  # prevent ANSI escape codes
             )
             self.finished.emit(f"User {self.upn} disabled successfully.")
         except subprocess.CalledProcessError as e:
@@ -186,12 +186,12 @@ class CsvDropZone(QLabel):
                 text-align: center;
             }
         """)
-        # Truncate to fit, but allow wrapping in 2 lines
+
         max_len = 40
         display_name = (file_name[:max_len] + "…") if len(file_name) > max_len else file_name
         display_name = display_name.replace("_", "_<wbr>")  # allow breaks at underscores
 
-        # Use HTML for multi-line display
+        # HTML for multi-line display
         self.setText(f"<div style='text-align:center;'>📄<br>{display_name}</div>")
 
     def dragEnterEvent(self, event):
@@ -254,14 +254,14 @@ class GroupsComparisonDialog(QDialog):
         self.upn_list = sorted(upn_list or [])
 
         layout = QVBoxLayout(self)
-        self.assign_btn = None  # track the single Assign button
+        self.assign_btn = None
 
         # --- Form section ---
         form_layout = QFormLayout()
         self.user1_combo = QComboBox()
         self.user2_combo = QComboBox()
 
-        # ✅ make combobox editable + searchable
+        # Make combobox editable + searchable
         self._setup_searchable_combobox(self.user1_combo, self.upn_list)
         self._setup_searchable_combobox(self.user2_combo, self.upn_list)
 
@@ -284,7 +284,7 @@ class GroupsComparisonDialog(QDialog):
             "Missing in User 2"
         ])
 
-        # ✅ all columns equal width
+        # All columns equal width
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -330,13 +330,13 @@ class GroupsComparisonDialog(QDialog):
         missing1 = data.get("MissingInUser1", [])
         missing2 = data.get("MissingInUser2", [])
 
-        # ✅ Remove old button if it exists
+        # Remove old button if it exists
         if self.assign_btn:
             self.layout().removeWidget(self.assign_btn)
             self.assign_btn.deleteLater()
             self.assign_btn = None
 
-        # ✅ Create a new one only if needed
+        # Create a new one only if needed
         if missing1 or missing2:
             self.assign_btn = QPushButton("Assign Missing Groups…")
             self.assign_btn.setStyleSheet("font-weight: bold; padding: 6px;")
@@ -349,7 +349,7 @@ class GroupsComparisonDialog(QDialog):
         user1 = self.user1_combo.currentText()
         user2 = self.user2_combo.currentText()
 
-        # 🧩 Clearer explanation for direction
+        # Clearer explanation for direction
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Select Assignment Direction")
@@ -387,7 +387,7 @@ class GroupsComparisonDialog(QDialog):
 
         choice = msg.exec()
 
-        # ✅ Corrected mapping:
+        # Corrected mapping:
         # MissingInUser2 = groups User2 is missing → copy from User1 to User2
         # MissingInUser1 = groups User1 is missing → copy from User2 to User1
 
@@ -487,7 +487,7 @@ class AssignGroupsDialog(QDialog):
         self.setMinimumWidth(900)
         self.setMinimumHeight(500)
 
-        # 🌟 Main vertical layout
+        # Main vertical layout
         main_layout = QVBoxLayout(self)
 
         # ───────────── Panels Zone (Users + Groups) ─────────────
@@ -758,7 +758,7 @@ class AssignAccessPackagesDialog(QDialog):
         self.setMinimumWidth(900)
         self.setMinimumHeight(500)
 
-        # 🌟 Main vertical layout
+        # Main vertical layout
         main_layout = QVBoxLayout(self)
 
         # ───────────── Panels Zone (Users + Packages) ─────────────
@@ -861,7 +861,6 @@ class AssignAccessPackagesDialog(QDialog):
             "assign_access_packages.ps1"
         )
 
-        # 💥 Now build command
         command = [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
@@ -1150,7 +1149,7 @@ class OffboardManager(QWidget):
         # --- Left menu with framed blocks ---
         left_panel = QVBoxLayout()
 
-        # 🔹 Block 1: Connection
+        # Block 1: Connection
         frame_connect = QGroupBox("Connection")
         frame_connect.setStyleSheet("""
             QGroupBox {
@@ -1195,7 +1194,7 @@ class OffboardManager(QWidget):
         # Toggle button (Set / Go Back)
         self.btn_set_path = styled_button("")  # text set later
         self.btn_set_path.clicked.connect(self.toggle_default_path)
-        self.update_set_path_button()  # 👈 set correct label on startup
+        self.update_set_path_button()
 
         # --- Hidden preview feature ---
         # Button starts disabled and greyed out
@@ -1220,7 +1219,7 @@ class OffboardManager(QWidget):
 
         left_panel.addWidget(frame_connect)
 
-        # 🔹 Block 2: Navigation
+        # Block 2: Navigation
         frame_nav = QGroupBox("Navigation")
         frame_nav.setStyleSheet("""
             QGroupBox {
@@ -1281,7 +1280,7 @@ class OffboardManager(QWidget):
 
         left_panel.addWidget(frame_nav)
 
-        # 🔹 Block 3: User Management
+        # Block 3: User Management
         frame_user = QGroupBox("User Management")
         frame_user.setStyleSheet("""
             QGroupBox {
@@ -1352,8 +1351,8 @@ class OffboardManager(QWidget):
         left_panel.addStretch()
 
         self.tenant_info = QLabel("Tenant: \nDomain: \nTenant ID: ")
-        self.tenant_info.setWordWrap(True)  # 🔹 allow wrapping
-        self.tenant_info.setMaximumWidth(220)  # 🔹 keep it constrained to sidebar width
+        self.tenant_info.setWordWrap(True)
+        self.tenant_info.setMaximumWidth(220)
         self.tenant_info.setStyleSheet("""
             font-size: 12px;
             color: #333;
@@ -2174,23 +2173,23 @@ class OffboardManager(QWidget):
             if index != -1:
                 self.stacked.setCurrentIndex(index)
 
-                # 🔹 Refresh comboboxes when entering Create User page
+                # Refresh comboboxes when entering Create User page
                 if name == "create_user":
                     self.try_populate_comboboxes()
 
-                    # 🔹 Ensure Account Enabled combobox always defaults to True
+                    # Ensure Account Enabled combobox always defaults to True
                     if hasattr(self, "field_accountenabled"):
                         if self.field_accountenabled.findText("True") == -1:
                             self.field_accountenabled.addItems(["True", "False"])
                         self.field_accountenabled.setCurrentText("True")
 
-                    # 🔹 Ensure Age Group combobox always has fixed values
+                    # Ensure Age Group combobox always has fixed values
                     if hasattr(self, "field_agegroup"):
                         if self.field_agegroup.findText("None") == -1:
                             self.field_agegroup.addItems(["Minor", "NotAdult", "Adult"])
                         self.field_agegroup.setCurrentText("")
 
-                    # 🔹 Ensure Consent for Minor combobox always has fixed values
+                    # Ensure Consent for Minor combobox always has fixed values
                     if hasattr(self, "field_minorconsent"):
                         if self.field_minorconsent.findText("None") == -1:
                             self.field_minorconsent.addItems(["Granted", "Denied", "notRequired"])
@@ -2465,7 +2464,6 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No Selection", "Please select at least one user to disable.")
             return
 
-        # Assuming UPN is in column 4 (adjust if needed to match your table)
         upns = list({
             self.identity_table.item(i.row(), 4).text().strip()
             for i in selected_items
@@ -2524,8 +2522,8 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No Selection", "Please select at least one user.")
             return
 
-        # 👇 Collect all UPNs from selected rows
-        upn_col = 4  # Adjust to your actual UPN column index
+        # Collect all UPNs from selected rows
+        upn_col = 4  # Adjust for the actual UPN column index
         user_upns = []
 
         for row in selected_rows:
@@ -2547,7 +2545,7 @@ class OffboardManager(QWidget):
             "AccessPackages.json"
         )
 
-        # ✅ Pass the correct list to the dialog
+        # Pass the correct list to the dialog
         dialog = AssignAccessPackagesDialog(self, user_upns=user_upns, json_path=json_path)
         dialog.exec()
 
@@ -3092,7 +3090,7 @@ class OffboardManager(QWidget):
             "Display Name": safe_val("field_displayname"),
             "First name": safe_val("field_givenname"),
             "Last name": safe_val("field_surname"),
-            "User Principal Name": upn,  # ✅ final full UPN only once
+            "User Principal Name": upn,
             "Password": safe_val("field_password"),
             "Job title": safe_val("field_jobtitle"),
             "Company name": safe_val("field_company"),
@@ -3116,11 +3114,11 @@ class OffboardManager(QWidget):
             "Proxy addresses": safe_val("field_proxy"),
             "IM addresses": safe_val("field_im"),
 
-            # 🔹 Added Parental Controls fields
+            # Added Parental Controls fields
             "Age group": safe_val("field_agegroup"),
             "Consent provided for minor": safe_val("field_minorconsent"),
 
-            # 🔹 Added Access Package field for PowerShell script
+            # Added Access Package field for PowerShell script
             "Access Package": safe_val("field_accesspackage"),
         }
 
@@ -3249,7 +3247,6 @@ class OffboardManager(QWidget):
         self.random_worker.start()
 
     def on_random_user_done(self, status, msg):
-        # keep error/success messages short and prevent resizing
         self.random_status.setWordWrap(True)
         self.random_status.setFixedWidth(150)
 
@@ -3263,11 +3260,9 @@ class OffboardManager(QWidget):
             else:
                 self.random_status.setText(msg.split("\n", 1)[0])
 
-        # (optional) immediately refresh the log list and select the new file
         try:
             self.refresh_log_list()
             if hasattr(self, "_last_random_log"):
-                # if your log dropdown is a QComboBox you can auto-select here
                 pass
         except Exception:
             pass
@@ -3324,7 +3319,7 @@ class OffboardManager(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # ✅ Call PowerShell script with CSV path
+        # Call PS script with CSV path
         script_path = os.path.abspath("Powershell_Scripts/bulk_create_users.ps1")
         params = {"CsvPath": self.csv_path}
 
@@ -3340,7 +3335,7 @@ class OffboardManager(QWidget):
             QMessageBox.information(self, "CSV Loaded", f"CSV loaded: {os.path.basename(file_path)}")
             self.show_named_page("dropped_csv")  # Switch directly to Dropped CSV page
 
-            # ✅ Enable bulk creation button
+            # Enable bulk creation button
             if hasattr(self, "bulk_create_btn"):
                 self.bulk_create_btn.setEnabled(True)
 
@@ -3352,7 +3347,6 @@ class OffboardManager(QWidget):
 
     def process_dropped_csv(self):
         """Triggered when 'Process CSV' button is clicked."""
-        # TODO: Add bulk create logic here
         QMessageBox.information(self, "Processing", "Processing dropped CSV for bulk user creation...")
 
     def load_templates(self):
@@ -3448,7 +3442,7 @@ class OffboardManager(QWidget):
             QMessageBox.warning(self, "No Template Selected", "Please select a template to update.")
             return
 
-        # 🔹 Collect all fields the same way as save_template
+        # Collect all fields the same way as save_template
         field_map = {
             "DisplayName": self.field_displayname,
             "GivenName": self.field_givenname,
@@ -3532,7 +3526,7 @@ class OffboardManager(QWidget):
             elif isinstance(widget, QDateEdit):
                 widget.setDate(QDate.currentDate())
 
-        # Special case: Employee Hire Date
+        # Employee Hire Date
         try:
             self.field_hiredate.setDate(QDate.currentDate())
         except Exception:
@@ -3648,11 +3642,11 @@ class OffboardManager(QWidget):
                 value = tpl.get(key, "")
 
                 if isinstance(widget, QComboBox):
-                    widget.setEditable(True)  # 🔹 allow free text
-                    widget.setCurrentText(value)  # 🔹 set the saved value
-                elif hasattr(widget, "setText"):  # QLineEdit
+                    widget.setEditable(True)
+                    widget.setCurrentText(value)
+                elif hasattr(widget, "setText"):
                     widget.setText(value)
-                elif key == "EmployeeHireDate" and hasattr(widget, "setDate"):  # QDateEdit
+                elif key == "EmployeeHireDate" and hasattr(widget, "setDate"):
                     try:
                         date = QDate.fromString(value, "yyyy-MM-dd")
                         if date.isValid():
@@ -3791,13 +3785,13 @@ class OffboardManager(QWidget):
                             .tolist()
                         )
                     else:
-                        return  # skip silently if column not found
+                        return
 
                     if values:
                         combo.blockSignals(True)
 
                         if combo.count() == 0:
-                            combo.addItem("")  # allow empty
+                            combo.addItem("")
                             combo.addItems([v for v in values if v])
 
                         combo.blockSignals(False)
@@ -3826,7 +3820,7 @@ class OffboardManager(QWidget):
             safe_set("field_manager", "UserPrincipalName")
             safe_set("field_sponsors", "UserPrincipalName")
 
-            # 🧩 Special case: Access Package values from JSON
+            # Special case: Access Package values from JSON
             json_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "JSONs", "AccessPackages.json"))
             if os.path.exists(json_path):
                 with open(json_path, "r", encoding="utf-8") as f:
@@ -3853,7 +3847,7 @@ class OffboardManager(QWidget):
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         cb.setCompleter(completer)
 
-        cb.setFixedWidth(width)  # 🔹 ensure uniform width
+        cb.setFixedWidth(width)
         return cb
 
     def generate_password(self, length: int = 12) -> str:
@@ -3996,7 +3990,7 @@ class OffboardManager(QWidget):
                 }}
                 QLabel {{
                     color: white;
-                    background: transparent;   /* 👈 prevent labels from drawing boxes */
+                    background: transparent;   /* prevent labels from drawing boxes */
                 }}
             """)
 
@@ -4109,7 +4103,7 @@ class OffboardManager(QWidget):
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
             table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
 
-            # 🔹 New: allow horizontal scroll for long values
+            # New: allow horizontal scroll for long values
             table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
@@ -4126,8 +4120,8 @@ class OffboardManager(QWidget):
                 table.setItem(i, 0, item_val)
                 table.setItem(i, 1, item_cnt)
 
-            table.resizeColumnsToContents()  # ensure proper width
-            table.setFixedHeight(250)  # 🔹 adjust height
+            table.resizeColumnsToContents()
+            table.setFixedHeight(250)
             v.addWidget(table)
             return frame
 
@@ -4247,7 +4241,7 @@ class OffboardManager(QWidget):
                 sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
                 vbox.addWidget(sub_lbl)
 
-            # 🔹 Make clickable
+            # Make clickable
             if on_click:
                 card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
                 card.mousePressEvent = lambda event: on_click()
@@ -4290,7 +4284,7 @@ class OffboardManager(QWidget):
                 r += 1
                 c = 0
 
-        # ✅ Ensure next section starts on a new row
+        # Ensure next section starts on a new row
         if c != 0:
             r += 1
 
@@ -4764,7 +4758,6 @@ class OffboardManager(QWidget):
             v.addWidget(table)
             return frame
 
-        # 🧠 Now define your Top-N sections
         layout.addWidget(make_top_table("Top Group Types", s("Group Type")), r, 0)
         layout.addWidget(make_top_table("Top Roles Assigned", s("Assigned Roles")), r, 1)
         layout.addWidget(make_top_table("Top Owners", s("Assigned Owners")), r, 2)

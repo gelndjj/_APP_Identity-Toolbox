@@ -62,36 +62,88 @@ foreach ($u in $upns) {
     Write-Host "✅ User has been disabled successfully." -ForegroundColor Green
 
     # =================================================================
-    # GRAPH PART: Remove from Entra ID direct groups (per user)
+    # GROUP MEMBERSHIPS: Remove user from all direct groups
+    #  - Security / non-mail-enabled      -> Graph
+    #  - Microsoft 365 "Unified" groups   -> EXO Remove-UnifiedGroupLinks
+    #  - Mail-enabled security / DL       -> EXO Remove-DistributionGroupMember
+    #  - On-prem synced groups            -> report (must remove on-prem)
     # =================================================================
-    $dynamic = @()
-    $failed  = @()
 
-    $groups = Get-MgUserMemberOfAsGroup -UserId $user.Id -All
-    if (-not $groups) {
+    $dynamic   = @()
+    $failed    = @()
+    $skipped   = @()
+    $exoTried  = $false
+
+    $memberships = Get-MgUserMemberOfAsGroup -UserId $user.Id -All
+    if (-not $memberships) {
         Write-Host "User is not a direct member of any groups." -ForegroundColor Yellow
-    } else {
-        Write-Host "User is direct member of $($groups.Count) groups. Attempting removal..."
-        $removed = 0
+    }
+    else {
+        Write-Host "User is direct member of $($memberships.Count) groups. Attempting removal..."
 
-        foreach ($g in $groups) {
-            $details = Get-MgGroup -GroupId $g.Id -Property "id,displayName,membershipRule" -ErrorAction SilentlyContinue
-            if ($details -and $details.membershipRule) {
-                $dynamic += $details
-                Write-Host "⚠️ Dynamic group (cannot remove manually): $($details.DisplayName)" -ForegroundColor Cyan
+        foreach ($g in $memberships) {
+            # Pull full group properties we need to decide the path
+            $grp = Get-MgGroup -GroupId $g.Id -Property "id,displayName,groupTypes,mailEnabled,securityEnabled,onPremisesSyncEnabled,membershipRule,mail" -ErrorAction SilentlyContinue
+
+            if (-not $grp) {
+                $failed += [PSCustomObject]@{ DisplayName = $g.DisplayName; Id = $g.Id; Error = "Lookup failed" }
                 continue
             }
 
+            # --- Dynamic groups: cannot remove a specific member
+            if ($grp.membershipRule) {
+                $dynamic += $grp
+                Write-Host "⚠️ Dynamic group (cannot remove manually): $($grp.DisplayName)" -ForegroundColor Cyan
+                continue
+            }
+
+            # --- On-prem synced groups: must be changed on-prem
+            if ($grp.onPremisesSyncEnabled) {
+                $skipped += [PSCustomObject]@{ DisplayName = $grp.DisplayName; Id = $grp.Id; Reason = "On-prem synced (hybrid) – modify in on-prem AD" }
+                Write-Host "⏭️ Hybrid group (on-prem synced): $($grp.DisplayName) — must remove on-prem." -ForegroundColor DarkYellow
+                continue
+            }
+
+            $isUnified = ($grp.groupTypes -contains "Unified")
+            $isMailEnabled = [bool]$grp.mailEnabled
+
             try {
-                Remove-MgGroupMemberDirectoryObjectByRef -GroupId $g.Id -DirectoryObjectId $user.Id -ErrorAction Stop
-                $removed++
-                Write-Host "Removed from group: $($g.DisplayName)" -ForegroundColor Yellow
-            } catch {
-                $failed += [PSCustomObject]@{ DisplayName = $g.DisplayName; Id = $g.Id; Error = $_.Exception.Message }
-                Write-Host "❌ Could not remove from group: $($g.DisplayName) — $($_.Exception.Message)" -ForegroundColor Red
+                if ($isUnified) {
+                    # Microsoft 365 Group (Unified) – use EXO
+                    if (-not $exoAvailable) { throw "Exchange Online not connected" }
+                    $exoTried = $true
+                    # Use identity by SMTP address when available; fall back to DisplayName
+                    $identity = if ($grp.mail) { $grp.mail } else { $grp.DisplayName }
+                    Remove-UnifiedGroupLinks -Identity $identity -LinkType Members -Links $user.UserPrincipalName -Confirm:$false -ErrorAction Stop
+                    Write-Host "Removed from M365 Group (Unified): $($grp.DisplayName)" -ForegroundColor Yellow
+                }
+                elseif ($isMailEnabled) {
+                    # Mail-enabled security group / Distribution list – use EXO
+                    if (-not $exoAvailable) { throw "Exchange Online not connected" }
+                    $exoTried = $true
+                    $identity = if ($grp.mail) { $grp.mail } else { $grp.DisplayName }
+                    Remove-DistributionGroupMember -Identity $identity `
+                        -Member $user.UserPrincipalName `
+                        -BypassSecurityGroupManagerCheck `
+                        -Confirm:$false -ErrorAction Stop
+                    Write-Host "Removed from mail-enabled group/DL: $($grp.DisplayName)" -ForegroundColor Yellow
+                }
+                else {
+                    # Plain security group – use Graph
+                    Remove-MgGroupMemberDirectoryObjectByRef -GroupId $grp.Id -DirectoryObjectId $user.Id -ErrorAction Stop
+                    Write-Host "Removed from security group: $($grp.DisplayName)" -ForegroundColor Yellow
+                }
+            }
+            catch {
+                $msg = $_.Exception.Message
+                $failed += [PSCustomObject]@{ DisplayName = $grp.DisplayName; Id = $grp.Id; Error = $msg }
+                Write-Host "❌ Could not remove from group: $($grp.DisplayName) — $msg" -ForegroundColor Red
             }
         }
-        Write-Host "✅ Removed from $removed Graph-managed groups."
+    }
+
+    if ($exoTried -eq $false -and $exoAvailable -eq $false) {
+        Write-Host "ℹ️ Note: Some groups may be mail-enabled/M365; connect to Exchange Online to remove those memberships." -ForegroundColor DarkYellow
     }
 
     # =================================================================

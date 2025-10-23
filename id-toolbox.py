@@ -349,7 +349,7 @@ class GroupsComparisonDialog(QDialog):
         user1 = self.user1_combo.currentText()
         user2 = self.user2_combo.currentText()
 
-        # Clearer explanation for direction
+        # Create dialog
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Icon.Question)
         msg.setWindowTitle("Select Assignment Direction")
@@ -369,30 +369,64 @@ class GroupsComparisonDialog(QDialog):
 
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
-        msg.setStyleSheet("""
-            QMessageBox {
-                background-color: #fafafa;
-            }
-            QLabel {
-                font-family: -apple-system, "Segoe UI", Helvetica, Arial;
-                color: #222;
-                padding: 10px;
-            }
-            QPushButton {
-                min-width: 80px;
-                padding: 6px 12px;
-                font-weight: 600;
-            }
-        """)
 
+        # --- Dynamic theme detection ---
+        palette = self.palette()
+        is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
+
+        if is_dark:
+            # Dark Mode
+            msg.setStyleSheet("""
+                QMessageBox {
+                    background-color: #1e1e1e;
+                    color: white;
+                }
+                QLabel {
+                    color: white;
+                    font-family: -apple-system, "Segoe UI", Helvetica, Arial;
+                    padding: 10px;
+                }
+                QPushButton {
+                    background-color: #333;
+                    color: white;
+                    border: 1px solid #555;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    min-width: 80px;
+                    font-weight: 600;
+                }
+                QPushButton:hover { background-color: #444; }
+                QPushButton:pressed { background-color: #555; }
+            """)
+        else:
+            # Light Mode
+            msg.setStyleSheet("""
+                QMessageBox {
+                    background-color: #fafafa;
+                }
+                QLabel {
+                    font-family: -apple-system, "Segoe UI", Helvetica, Arial;
+                    color: #222;
+                    padding: 10px;
+                }
+                QPushButton {
+                    background-color: #f5f5f5;
+                    color: #222;
+                    border: 1px solid #aaa;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    min-width: 80px;
+                    font-weight: 600;
+                }
+                QPushButton:hover { background-color: #e0e0e0; }
+                QPushButton:pressed { background-color: #d0d0d0; }
+            """)
+
+        # --- Execute ---
         choice = msg.exec()
 
-        # Corrected mapping:
-        # MissingInUser2 = groups User2 is missing → copy from User1 to User2
-        # MissingInUser1 = groups User1 is missing → copy from User2 to User1
-
+        # --- Logic mapping ---
         if choice == QMessageBox.StandardButton.Yes:
-            # YES → assign groups missing in User2 (copy from user1 to user2)
             dialog = AssignMissingGroupsDialog(
                 self,
                 source_user=user1,
@@ -400,7 +434,6 @@ class GroupsComparisonDialog(QDialog):
                 missing_groups=missing2
             )
         else:
-            # NO → assign groups missing in User1 (copy from user2 to user1)
             dialog = AssignMissingGroupsDialog(
                 self,
                 source_user=user2,
@@ -655,28 +688,63 @@ class AssignGroupsDialog(QDialog):
                 "Status": (stdout or "").strip()
             }]
 
-        # --- HTML table view ---
+        # --- HTML results view with automatic dark mode detection ---
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Assignment Results")
+        dlg.setMinimumSize(700, 420)
+
+        # Detect dark/light mode dynamically
+        palette = self.palette()
+        is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
+
+        if is_dark:
+            bg_color = "#1e1e1e"
+            text_color = "#f0f0f0"
+            header_bg = "#333333"
+            border_color = "#444444"
+        else:
+            bg_color = "#ffffff"
+            text_color = "#222222"
+            header_bg = "#f6f6f6"
+            border_color = "#e5e5e5"
+
         def row_html(r):
             user = r.get("UserUPN", "N/A")
             group = r.get("GroupName", "N/A")
             st = r.get("Status", "")
-            color = "#222"
+            color = text_color
             st_lower = st.lower()
             if "✅" in st or "success" in st_lower or "added" in st_lower:
-                color = "#0a7a0a"
+                color = "#00cc44"
             elif "❌" in st or "fail" in st_lower or "error" in st_lower:
-                color = "#c00"
+                color = "#ff4c4c"
             elif "⚠" in st or "already" in st_lower:
-                color = "#b66a00"
+                color = "#ffcc00"
             return f"<tr><td>{user}</td><td>{group}</td><td style='color:{color}'>{st}</td></tr>"
 
         rows = "\n".join(row_html(r) for r in results)
         html = f"""
         <html><head><style>
-          body {{ font-family: -apple-system, Helvetica, Arial; font-size: 13px; color: #222; }}
-          table {{ border-collapse: collapse; width: 100%; }}
-          th, td {{ padding: 6px 10px; border-bottom: 1px solid #e5e5e5; text-align: left; }}
-          th {{ background: #f6f6f6; }}
+          body {{
+              font-family: -apple-system, Helvetica, Arial;
+              font-size: 13px;
+              color: {text_color};
+              background-color: {bg_color};
+          }}
+          table {{
+              border-collapse: collapse;
+              width: 100%;
+          }}
+          th, td {{
+              padding: 6px 10px;
+              border-bottom: 1px solid {border_color};
+              text-align: left;
+          }}
+          th {{
+              background: {header_bg};
+              color: {text_color};
+          }}
         </style></head><body>
           <h3>Assignment Results</h3>
           <table>
@@ -686,10 +754,6 @@ class AssignGroupsDialog(QDialog):
         </body></html>
         """
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Assignment Results")
-        dlg.setMinimumSize(700, 420)
-
         layout = QVBoxLayout(dlg)
         view = QTextEdit()
         view.setReadOnly(True)
@@ -697,7 +761,18 @@ class AssignGroupsDialog(QDialog):
         layout.addWidget(view)
 
         btn_close = QPushButton("Close")
-        btn_close.setStyleSheet("font-weight: bold; padding: 6px;")
+        btn_close.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {'#333' if is_dark else '#f5f5f5'};
+                color: {'white' if is_dark else '#222'};
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {'#444' if is_dark else '#e0e0e0'};
+            }}
+        """)
         btn_close.clicked.connect(lambda: (dlg.close(), self.close()))
         layout.addWidget(btn_close)
 
@@ -1006,7 +1081,7 @@ class AssignMissingGroupsDialog(QDialog):
 
         for i, grp in enumerate(self.missing_groups):
             chk_item = QTableWidgetItem()
-            chk_item.setCheckState(Qt.CheckState.Checked)
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(i, 0, chk_item)
             self.table.setItem(i, 1, QTableWidgetItem(grp))
 

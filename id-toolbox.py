@@ -1,4 +1,4 @@
-import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time, tempfile
+import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time, tempfile, base64
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTableWidget,
@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
     QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
     QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog,
-    QFormLayout, QDialog, QListWidgetItem, QDialogButtonBox, QListWidget
+    QFormLayout, QDialog, QSpinBox, QCheckBox, QListWidget
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush
@@ -14,6 +14,7 @@ from PyQt6 import QtGui, QtCore
 from faker import Faker
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
 
 class ClickableCard(QFrame):
     clicked = pyqtSignal()
@@ -25,6 +26,7 @@ class ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
 
 class PowerShellLoggerWorker(QThread):
     output = pyqtSignal(str)
@@ -69,6 +71,7 @@ class PowerShellLoggerWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorkerWithParam(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -97,6 +100,7 @@ class PowerShellWorkerWithParam(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorker(QThread):
     finished = pyqtSignal(str, str)  # status, message
 
@@ -115,9 +119,10 @@ class PowerShellWorker(QThread):
         except Exception as e:
             self.finished.emit("error", str(e))
 
+
 class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)          # live log lines
-    finished = pyqtSignal(str, str)   # status, message
+    output = pyqtSignal(str)  # live log lines
+    finished = pyqtSignal(str, str)  # status, message
 
     def __init__(self, command):
         super().__init__()
@@ -146,6 +151,7 @@ class StreamingPowerShellWorker(QThread):
 
         except Exception as e:
             self.finished.emit("error", str(e))
+
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -213,7 +219,8 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
-#--- Groups Comparison---#
+
+# --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -244,6 +251,7 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -482,9 +490,10 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-#--- Groups Assignments---#
+
+# --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
-    finished = pyqtSignal(str, str)   # stdout, stderr
+    finished = pyqtSignal(str, str)  # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -508,6 +517,7 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -636,9 +646,9 @@ class AssignGroupsDialog(QDialog):
             "-File", script_path,
             "-UserUPNs", ",".join(self.user_upns),
             "-GroupIDs", ",".join([
-            grp["ObjectId"] for i, grp in enumerate(self.groups)
-            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
-        ])
+                grp["ObjectId"] for i, grp in enumerate(self.groups)
+                if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+            ])
         ]
 
         self.worker = AssignGroupsWorker(command)
@@ -783,9 +793,10 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-#--- Access Package ---#
+
+# --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
-    finished = pyqtSignal(str, str)   # stdout, stderr
+    finished = pyqtSignal(str, str)  # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -821,6 +832,7 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1051,6 +1063,7 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -1204,7 +1217,370 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-#--- Application ---#
+
+# --- Generate Temporary Access Pass Worker ---
+class GenerateTAPWorker(QThread):
+    finished = pyqtSignal(str, str)
+    error = pyqtSignal(str)
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        import subprocess
+        try:
+            result = subprocess.run(
+                self.command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8"
+            )
+            if result.returncode != 0:
+                self.error.emit(result.stderr.strip() or "Unknown PowerShell error")
+            else:
+                self.finished.emit(result.stdout.strip(), result.stderr.strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class GenerateTAPDialog(QDialog):
+    def __init__(self, parent=None, user_upns=None, console=None):
+        super().__init__(parent)
+
+        self.user_upns = user_upns or []
+        self.console = console
+
+        self.setWindowTitle("Generate Temporary Access Pass(es)")
+        self.setMinimumWidth(650)
+        self.setMinimumHeight(400)
+
+        main_layout = QVBoxLayout(self)
+        panels_layout = QHBoxLayout()
+
+        # ───────────── LEFT: Selected Users ─────────────
+        left_layout = QVBoxLayout()
+        title = QLabel(f"Selected User(s): ({len(self.user_upns)})")
+        title.setStyleSheet("font-weight: 600;")
+        left_layout.addWidget(title)
+
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        left_layout.addWidget(self.user_list)
+        panels_layout.addLayout(left_layout, 1)
+
+        # ───────────── RIGHT: TAP Settings ─────────────
+        right_layout = QVBoxLayout()
+
+        # Duration slider
+        self.duration_label = QLabel("Duration: 60 min")
+        right_layout.addWidget(self.duration_label)
+
+        self.duration_slider = QSlider(Qt.Orientation.Horizontal)
+        self.duration_slider.setRange(60, 480)
+        self.duration_slider.setSingleStep(15)
+        self.duration_slider.setValue(60)
+        self.duration_slider.valueChanged.connect(self.update_duration_label)
+        right_layout.addWidget(self.duration_slider)
+
+        # One-time checkbox
+        self.one_time_check = QCheckBox("One-time use")
+        self.one_time_check.setChecked(True)
+        self.one_time_check.stateChanged.connect(self.toggle_duration_state)
+        right_layout.addWidget(self.one_time_check)
+
+        right_layout.addStretch(1)
+        panels_layout.addLayout(right_layout, 1)
+        main_layout.addLayout(panels_layout)
+
+        # ───────────── BUTTONS ─────────────
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+
+        self.ok_button = QPushButton("Generate TAP(s)")
+        self.ok_button.clicked.connect(self.start_tap_generation)
+        self.ok_button.setStyleSheet("font-weight: 600;")
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch(1)
+        main_layout.addLayout(button_layout)
+
+    # ----------------------------------------------------------------------
+    def update_duration_label(self, value):
+        self.duration_label.setText(f"Duration: {value} min")
+
+    def toggle_duration_state(self, state):
+        """Disable duration slider when one-time use is checked."""
+        disabled = state == Qt.CheckState.Checked
+        self.duration_slider.setEnabled(not disabled)
+        self.duration_label.setEnabled(not disabled)
+
+    # ----------------------------------------------------------------------
+    def start_tap_generation(self):
+        import datetime
+        from PyQt6.QtWidgets import QMessageBox
+
+        duration = self.duration_slider.value()
+        one_time = self.one_time_check.isChecked()
+
+        if not self.user_upns:
+            QMessageBox.warning(self, "No Users", "No user UPNs were provided.")
+            return
+
+        # --- Paths ---
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "generate_tap.ps1"
+        )
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(
+            getattr(self.parent(), "logs_dir", os.getcwd()),
+            f"{timestamp}_Generate-TAP.log"
+        )
+
+        # --- Build parameters ---
+        args = [
+            "-UserPrincipalName", ",".join(self.user_upns),
+            "-LifetimeInMinutes", str(duration)
+        ]
+        if one_time:
+            args.append("-OneTimeUse")
+
+        # --- Clear console and start PowerShell worker ---
+        if self.console:
+            self.console.clear()
+            self.console.append(f"🚀 Generating TAP(s) for {len(self.user_upns)} user(s)...\n")
+
+        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+
+        # Stream output live to console
+        if self.console:
+            self.worker.output.connect(lambda line: (
+                self.console.append(line),
+                self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+            ))
+
+        # Error handling
+        self.worker.error.connect(self.on_tap_error)
+
+        # When done
+        self.worker.finished.connect(self.on_tap_done)
+
+        # Optional: refresh logs in main window
+        if hasattr(self.parent(), "refresh_log_list"):
+            self.worker.finished.connect(self.parent().refresh_log_list)
+
+        # Start
+        self.worker.start()
+
+        # Show console + disable button while running
+        if hasattr(self.parent(), "show_named_page"):
+            self.parent().show_named_page("console")
+
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Generating...")
+
+    # ----------------------------------------------------------------------
+    def on_tap_done(self, msg: str = ""):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Generate TAP(s)")
+
+        QMessageBox.information(
+            self,
+            "TAP Generation Complete",
+            f"✅ Temporary Access Pass(es) generated successfully.\n\n"
+            f"Duration: {self.duration_slider.value()} minutes\n"
+            f"One-time use: {'Yes' if self.one_time_check.isChecked() else 'No'}"
+        )
+
+        # Close the dialog
+        self.accept()
+
+    def on_tap_error(self, err):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Generate TAP(s)")
+        QMessageBox.critical(self, "PowerShell Error", err)
+
+
+class GenerateResetPasswordDialog(QDialog):
+    def __init__(self, parent=None, user_upns=None, console=None):
+        super().__init__(parent)
+
+        self.user_upns = user_upns or []
+        self.console = console
+
+        self.setWindowTitle("Reset User Password(s)")
+        self.setMinimumWidth(650)
+        self.setMinimumHeight(400)
+
+        main_layout = QVBoxLayout(self)
+        panels_layout = QHBoxLayout()
+
+        # ───────────── LEFT: Selected Users ─────────────
+        left_layout = QVBoxLayout()
+        title = QLabel(f"Selected User(s): ({len(self.user_upns)})")
+        title.setStyleSheet("font-weight: 600;")
+        left_layout.addWidget(title)
+
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        left_layout.addWidget(self.user_list)
+        panels_layout.addLayout(left_layout, 1)
+
+        # ───────────── RIGHT: Password Settings ─────────────
+        right_layout = QVBoxLayout()
+
+        self.password_label = QLabel("New Password:")
+        right_layout.addWidget(self.password_label)
+
+        self.password_field = QLineEdit()
+        self.password_field.setPlaceholderText("Click 'Generate' to create random password")
+        self.password_field.setEchoMode(QLineEdit.EchoMode.Normal)
+        right_layout.addWidget(self.password_field)
+
+        self.generate_btn = QPushButton("🔁 Generate Random Password")
+        self.generate_btn.clicked.connect(self.generate_random_password)
+        right_layout.addWidget(self.generate_btn)
+
+        # Checkbox — control whether password must be changed at next login
+        self.force_change_check = QCheckBox("Force password change at next login")
+        self.force_change_check.setChecked(True)  # default like Entra portal
+        right_layout.addWidget(self.force_change_check)
+
+        right_layout.addStretch(1)
+        panels_layout.addLayout(right_layout, 1)
+        main_layout.addLayout(panels_layout)
+
+        # ───────────── BUTTONS ─────────────
+        button_layout = QHBoxLayout()
+        button_layout.addStretch(1)
+
+        self.ok_button = QPushButton("Reset Password(s)")
+        self.ok_button.clicked.connect(self.start_password_reset)
+        self.ok_button.setStyleSheet("font-weight: 600;")
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+
+        button_layout.addWidget(self.ok_button)
+        button_layout.addSpacing(10)
+        button_layout.addWidget(cancel_button)
+        button_layout.addStretch(1)
+        main_layout.addLayout(button_layout)
+
+    # ----------------------------------------------------------------------
+    def generate_random_password(self):
+        """Generate a secure 14-char password with min, cap, digit, and special."""
+        chars = (
+                random.choice(string.ascii_lowercase)
+                + random.choice(string.ascii_uppercase)
+                + random.choice(string.digits)
+                + random.choice("!@#$%^&*()-_=+[]")
+        )
+        chars += "".join(random.choices(string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{}", k=10))
+        password = ''.join(random.sample(chars, len(chars)))  # shuffle
+        self.password_field.setText(password)
+
+    # ----------------------------------------------------------------------
+    def start_password_reset(self):
+        import datetime, base64
+        from PyQt6.QtWidgets import QMessageBox
+
+        # --- Get entered or generated password ---
+        new_password = self.password_field.text().strip()
+        if not new_password:
+            QMessageBox.warning(self, "Missing Password", "Please generate or enter a password.")
+            return
+
+        if not self.user_upns:
+            QMessageBox.warning(self, "No Users", "No user UPNs were provided.")
+            return
+
+        # --- Paths ---
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "reset_password.ps1"
+        )
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(
+            getattr(self.parent(), "logs_dir", os.getcwd()),
+            f"{timestamp}_Reset-Password.log"
+        )
+
+        # --- Encode password safely ---
+        pw_b64 = base64.b64encode(new_password.encode("utf-8")).decode("ascii")
+
+        # --- Build arguments ---
+        args = [
+            "-UserPrincipalName", ",".join(self.user_upns),
+            "-NewPasswordBase64", pw_b64
+        ]
+
+        # Add optional flag if the checkbox exists and is UNCHECKED
+        if hasattr(self, "force_change_check") and not self.force_change_check.isChecked():
+            args.append("-NoForceChange")
+
+        # --- Console feedback ---
+        if self.console:
+            self.console.clear()
+            self.console.append(f"🔐 Resetting password for {len(self.user_upns)} user(s)...\n")
+
+        # --- Create and start worker ---
+        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+
+        if self.console:
+            self.worker.output.connect(lambda line: (
+                self.console.append(line),
+                self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+            ))
+
+        self.worker.error.connect(self.on_password_error)
+        self.worker.finished.connect(self.on_password_done)
+
+        if hasattr(self.parent(), "refresh_log_list"):
+            self.worker.finished.connect(self.parent().refresh_log_list)
+
+        self.worker.start()
+
+        if hasattr(self.parent(), "show_named_page"):
+            self.parent().show_named_page("console")
+
+        # --- Disable button during run ---
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Resetting...")
+
+    # ----------------------------------------------------------------------
+    def on_password_done(self, msg: str = ""):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Reset Password(s)")
+
+        QMessageBox.information(
+            self,
+            "Password Reset Complete",
+            f"✅ Password(s) reset successfully.\n\n"
+            f"Force change at next sign-in is enabled."
+        )
+
+        self.accept()
+
+    def on_password_error(self, err):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Reset Password(s)")
+        QMessageBox.critical(self, "PowerShell Error", err)
+
+
+# --- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
@@ -2087,7 +2463,8 @@ class OffboardManager(QWidget):
         # Console output
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
+        self.console_output.setStyleSheet(
+            "background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
         console_layout.addWidget(self.console_output)
 
         # Populate logs at startup
@@ -2105,7 +2482,8 @@ class OffboardManager(QWidget):
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
-        self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
+        self.btn_create_user.clicked.connect(
+            lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
@@ -2273,24 +2651,40 @@ class OffboardManager(QWidget):
                     if hasattr(self, "field_usagelocation"):
                         if self.field_usagelocation.count() == 0:
                             self.field_usagelocation.addItems([
-                            "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
-                            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR",
-                            "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN", "CX",
-                            "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ", "DM",
-                            "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF",
-                            "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN",
-                            "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM",
-                            "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV",
-                            "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT",
-                            "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM",
-                            "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK",
-                            "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU",
-                            "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS", "SC",
-                            "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR", "SJ",
-                            "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN", "TR",
-                            "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
-                            "VI", "WF", "EH", "YE", "ZM", "ZW"
-                        ])
+                                "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT",
+                                "AZ",
+                                "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV",
+                                "BR",
+                                "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN",
+                                "CX",
+                                "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ",
+                                "DM",
+                                "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF",
+                                "PF",
+                                "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG",
+                                "GN",
+                                "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE",
+                                "IM",
+                                "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA",
+                                "LV",
+                                "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML",
+                                "MT",
+                                "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ",
+                                "MM",
+                                "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM",
+                                "PK",
+                                "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO",
+                                "RU",
+                                "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS",
+                                "SC",
+                                "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR",
+                                "SJ",
+                                "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN",
+                                "TR",
+                                "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN",
+                                "VG",
+                                "VI", "WF", "EH", "YE", "ZM", "ZW"
+                            ])
                         self.field_usagelocation.setCurrentText("")
 
             else:
@@ -2437,6 +2831,14 @@ class OffboardManager(QWidget):
         assign_ap_action = QAction("Assign Access Package(s)", self)
         assign_ap_action.triggered.connect(self.confirm_assign_access_packages)
         menu.addAction(assign_ap_action)
+
+        tap_action = QAction("Generate TAP(s)", self)
+        tap_action.triggered.connect(self.open_generate_tap_dialog)
+        menu.addAction(tap_action)
+
+        pwd_action = QAction("Reset Password(s)", self)
+        pwd_action.triggered.connect(self.open_reset_password_dialog)
+        menu.addAction(pwd_action)
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
@@ -2648,6 +3050,80 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load log:\n{e}")
 
+    def open_generate_tap_dialog(self):
+        # Retrieve selected user UPNs from identity_table
+        selected_items = self.identity_table.selectionModel().selectedRows()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # --- Find the UPN column dynamically ---
+        upn_col = None
+        for col in range(self.identity_table.columnCount()):
+            header = self.identity_table.horizontalHeaderItem(col).text().strip().lower()
+            if any(k in header for k in ["upn", "userprincipalname", "email", "user principal name"]):
+                upn_col = col
+                break
+
+        if upn_col is None:
+            QMessageBox.critical(self, "Error", "No UPN or Email column found in the table.")
+            return
+
+        # --- Extract the UPNs ---
+        user_upns = []
+        for idx in selected_items:
+            item = self.identity_table.item(idx.row(), upn_col)
+            if item and item.text().strip():
+                user_upns.append(item.text().strip())
+
+        if not user_upns:
+            QMessageBox.critical(self, "Error", "No valid UPNs found in the selected rows.")
+            return
+
+        # --- Launch the TAP dialog ---
+        dlg = GenerateTAPDialog(
+            self,
+            user_upns=user_upns,
+            console=getattr(self, "console", None)
+        )
+        dlg.exec()
+
+    def open_reset_password_dialog(self):
+        selected_items = self.identity_table.selectionModel().selectedRows()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # Find UPN column
+        upn_col = None
+        for col in range(self.identity_table.columnCount()):
+            header = self.identity_table.horizontalHeaderItem(col).text().strip().lower()
+            if any(k in header for k in ["upn", "userprincipalname", "email", "user principal name"]):
+                upn_col = col
+                break
+
+        if upn_col is None:
+            QMessageBox.critical(self, "Error", "No UPN or Email column found.")
+            return
+
+        # Extract UPNs
+        user_upns = []
+        for idx in selected_items:
+            item = self.identity_table.item(idx.row(), upn_col)
+            if item and item.text().strip():
+                user_upns.append(item.text().strip())
+
+        if not user_upns:
+            QMessageBox.critical(self, "Error", "No valid UPNs found in the selected rows.")
+            return
+
+        dlg = GenerateResetPasswordDialog(
+            self,
+            user_upns=user_upns,
+            console=getattr(self, "console", None)
+        )
+        dlg.exec()
+
     # --- CSV handling ---
     def refresh_csv_lists(self, target=None):
         """
@@ -2751,7 +3227,6 @@ class OffboardManager(QWidget):
             self.refresh_csv_lists("apps")
         elif idx == 3:
             self.refresh_csv_lists("groups")
-
 
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
@@ -3367,7 +3842,8 @@ class OffboardManager(QWidget):
             "Password", "Job title", "Company name", "Department", "Employee ID", "City",
             "Country or region", "State or province", "Office location", "Street address",
             "Manager", "Sponsors", "Usage location", "ZIP or postal code", "Business phone"
-            "Mobile phone", "Other emails", "Age group", "Consent provided for minor", "Access Package"
+                                                                           "Mobile phone", "Other emails", "Age group",
+            "Consent provided for minor", "Access Package"
         ]
 
         try:
@@ -4955,6 +5431,7 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

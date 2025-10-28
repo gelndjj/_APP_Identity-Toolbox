@@ -1395,6 +1395,7 @@ class GenerateTAPDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Reset Password ---
+
 class GenerateResetPasswordDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1565,6 +1566,7 @@ class GenerateResetPasswordDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Revoke Session ---
+
 class RevokeSessionsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1680,6 +1682,7 @@ class RevokeSessionsDialog(QDialog):
         self.ok_button.setText("Revoke Sessions")
 
 # --- Get LAPS ---
+
 class RetrieveLAPSDialog(QDialog):
     def __init__(self, parent=None, device_names=None, console=None):
         super().__init__(parent)
@@ -1858,6 +1861,199 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
+# --- Exchange PART ---
+class AssignExchangeWorker(QThread):
+    finished = pyqtSignal(str, str)  # stdout, stderr
+    error = pyqtSignal(str)
+
+    def __init__(self, command):
+        super().__init__()
+        self.command = command
+
+    def run(self):
+        try:
+            result = subprocess.run(
+                self.command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8"
+            )
+            if result.returncode != 0:
+                self.error.emit(result.stderr.strip() or "Unknown PowerShell error")
+            else:
+                self.finished.emit(result.stdout.strip(), result.stderr.strip())
+        except Exception as e:
+            self.error.emit(str(e))
+
+class GrantSMBFullDialog(QDialog):
+    def __init__(self, parent=None, user_upns=None, csv_path=None):
+        super().__init__(parent)
+
+        self.user_upns = user_upns or []
+        self.csv_path = csv_path
+
+        self.setWindowTitle("Grant SMB Full Delegation")
+        self.setMinimumSize(900, 500)
+
+        main_layout = QVBoxLayout(self)
+        panels_layout = QHBoxLayout()
+
+        # LEFT = Selected Users list
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Selected User(s)"))
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        left.addWidget(self.user_list)
+        panels_layout.addLayout(left, 1)
+
+        # RIGHT = SMB Table
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Available Shared Mailboxes"))
+
+        try:
+            df = pd.read_csv(self.csv_path, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self, "CSV Error", f"Failed to load Exchange CSV:\n{e}")
+            self.close()
+            return
+
+        self.df = df
+        name_col = "Shared Mailbox"
+        smtp_col = "Email Address"
+
+        if name_col not in df.columns or smtp_col not in df.columns:
+            QMessageBox.critical(
+                self, "Invalid CSV",
+                f"Missing required columns:\n{name_col}\n{smtp_col}"
+            )
+            self.close()
+            return
+
+        self.mailboxes = [
+            {"Name": row[name_col], "SMTP": row[smtp_col]}
+            for _, row in df.iterrows()
+        ]
+
+        # Search filter
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("Search Shared Mailbox or SMTP...")
+        self.search_box.textChanged.connect(self.filter_smbs)
+        right.addWidget(self.search_box)
+
+        # Table
+        self.table = QTableWidget(len(self.mailboxes), 2)
+        self.table.setHorizontalHeaderLabels(["Assign", "Shared Mailbox"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 80)
+        self.populate_table(self.mailboxes)
+        right.addWidget(self.table)
+
+        panels_layout.addLayout(right, 2)
+        main_layout.addLayout(panels_layout)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        self.ok_button = QPushButton("Grant Full Delegation")
+        self.ok_button.clicked.connect(self.start_granting)
+        btn_layout.addWidget(self.ok_button)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btn_layout.addSpacing(10)
+        btn_layout.addWidget(cancel)
+        btn_layout.addStretch(1)
+        main_layout.addLayout(btn_layout)
+
+    def populate_table(self, items):
+        self.table.setRowCount(len(items))
+        for i, smb in enumerate(items):
+            chk = QTableWidgetItem()
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(i, 0, chk)
+            self.table.setItem(i, 1, QTableWidgetItem(smb["Name"]))
+
+    def filter_smbs(self, text):
+        text = text.lower()
+        for row in range(self.table.rowCount()):
+            name = self.table.item(row, 1).text().lower()
+            self.table.setRowHidden(row, text not in name)
+
+    def start_granting(self):
+        selected = [
+            self.mailboxes[i]
+            for i in range(len(self.mailboxes))
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Select at least one Shared Mailbox.")
+            return
+
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "grant_smb_full.ps1"
+        )
+
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Granting...")
+
+        command = [
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-UserUPNs", ",".join(self.user_upns),
+            "-SMBEmails", ",".join(m["SMTP"] for m in selected)
+        ]
+
+        self.worker = AssignExchangeWorker(command)
+        self.worker.finished.connect(self.on_assignment_done)
+        self.worker.error.connect(self.on_assignment_error)
+        self.worker.start()
+
+    def done_dialog(self, stdout, stderr):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Grant Full Delegation")
+        QMessageBox.information(self, "Done", "Delegation applied successfully.")
+        self.accept()
+
+    def error_dialog(self, err):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Grant Full Delegation")
+        QMessageBox.critical(self, "Error", err)
+
+    def on_assignment_done(self, stdout: str, stderr: str = ""):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Grant Full Delegation")
+
+        # Show stderr first if exists
+        if stderr.strip():
+            QMessageBox.warning(self, "PowerShell Warning", stderr)
+
+        # Display result output in a popup
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Delegation Results")
+        dlg.setMinimumSize(650, 400)
+
+        text_output = QTextEdit()
+        text_output.setReadOnly(True)
+        text_output.setText(stdout if stdout.strip() else "Completed successfully.")
+
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(text_output)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(lambda: (dlg.close(), self.accept()))
+        layout.addWidget(btn_close)
+
+        dlg.exec()
+
+    def on_assignment_error(self, err: str):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Grant Full Delegation")
+        QMessageBox.critical(self, "PowerShell Error", err)
+
+
 #--- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
@@ -1980,11 +2176,12 @@ class OffboardManager(QWidget):
         self.btn_devices = QPushButton("Devices")
         self.btn_apps = QPushButton("Applications")
         self.btn_groups = QPushButton("Groups")
+        self.btn_exchange = QPushButton("Exchange")
         self.btn_console = QPushButton("Console")
 
         for b in [
             self.btn_dashboard, self.btn_identity, self.btn_devices,
-            self.btn_apps, self.btn_groups, self.btn_console
+            self.btn_apps, self.btn_groups, self.btn_exchange, self.btn_console
         ]:
             b.setFixedHeight(40)
             b.setStyleSheet("""
@@ -2215,6 +2412,34 @@ class OffboardManager(QWidget):
         outer_layout.addWidget(self.groups_dash_scroll)
         self.dashboard_tabs.addTab(self.groups_dash_tab, "Groups Dashboard")
 
+        # ---------------- Exchange Dashboard ----------------
+        self.exchange_dash_tab = QWidget()
+        self.exchange_dash_scroll = QScrollArea()
+        self.exchange_dash_scroll.setWidgetResizable(True)
+
+        self.exchange_dash_container = QWidget()
+        self.exchange_dash_layout = QVBoxLayout(self.exchange_dash_container)
+
+        self.exchange_dash_selector = QComboBox()
+        try:
+            self.exchange_dash_selector.currentIndexChanged.disconnect()
+        except TypeError:
+            pass
+        self.exchange_dash_selector.currentIndexChanged.connect(
+            lambda: self.update_exchange_dashboard_from_csv(
+                self.exchange_dash_selector, self.exchange_dash_cards
+            )
+        )
+        self.exchange_dash_layout.addWidget(self.exchange_dash_selector)
+
+        self.exchange_dash_cards = QGridLayout()
+        self.exchange_dash_layout.addLayout(self.exchange_dash_cards)
+
+        self.exchange_dash_scroll.setWidget(self.exchange_dash_container)
+        _exchange_outer_layout = QVBoxLayout(self.exchange_dash_tab)
+        _exchange_outer_layout.addWidget(self.exchange_dash_scroll)
+        self.dashboard_tabs.addTab(self.exchange_dash_tab, "Exchange Dashboard")
+
         # Initialize tab tracking before refresh tab logic
         self.last_active_tab = 0
 
@@ -2365,6 +2590,35 @@ class OffboardManager(QWidget):
         self.stacked.addWidget(self.groups_page)
         self.page_map["groups"] = self.groups_page
         self.try_populate_groups_csv()
+
+        # --- Exchange page (Shared Mailboxes view) ---
+        self.exchange_page = QWidget()
+        exchange_layout = QVBoxLayout(self.exchange_page)
+
+        # CSV selector for Exchange
+        self.exchange_csv_selector = QComboBox()
+        self.exchange_csv_selector.currentIndexChanged.connect(self.load_selected_exchange_csv)
+        exchange_layout.addWidget(self.exchange_csv_selector)
+
+        # Search field (by Mailbox name or Email)
+        self.exchange_search = QLineEdit()
+        self.exchange_search.setPlaceholderText("Search by Shared Mailbox or Email Address (contains)...")
+        self.exchange_search.textChanged.connect(self.filter_exchange_table)
+        exchange_layout.addWidget(self.exchange_search)
+
+        # Exchange table (Shared Mailboxes list)
+        self.exchange_table = QTableWidget()
+        self.exchange_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.exchange_table.horizontalHeader().setStretchLastSection(True)
+        self.exchange_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.exchange_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.exchange_table.setSortingEnabled(True)
+        exchange_layout.addWidget(self.exchange_table)
+
+        # Add to stacked widget
+        self.stacked.addWidget(self.exchange_page)
+        self.page_map["exchange"] = self.exchange_page
+        self.try_populate_exchange_csv()
 
         # --- Console page ---
         self.console_page = QWidget()
@@ -2760,6 +3014,7 @@ class OffboardManager(QWidget):
         self.btn_devices.clicked.connect(lambda: self.show_named_page("devices"))
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
+        self.btn_exchange.clicked.connect(lambda: self.show_named_page("exchange"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
         self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
@@ -3083,6 +3338,16 @@ class OffboardManager(QWidget):
 
         menu = QMenu(self.identity_table)
 
+        # -------------------------
+        # ENTRA SECTION HEADER
+        # -------------------------
+        entra_header = QAction("— Entra —", self)
+        entra_header.setEnabled(False)
+        entra_header.setSeparator(False)
+        entra_header.setIconVisibleInMenu(False)
+        menu.addAction(entra_header)
+
+        # Existing Entra actions
         assign_group_action = QAction("Assign Group(s)", self)
         assign_group_action.triggered.connect(self.confirm_assign_groups)
         menu.addAction(assign_group_action)
@@ -3106,6 +3371,28 @@ class OffboardManager(QWidget):
         disable_action = QAction("Disable User(s)", self)
         disable_action.triggered.connect(self.confirm_disable_users)
         menu.addAction(disable_action)
+
+        # Small visual separator line
+        menu.addSeparator()
+
+        # -------------------------
+        # EXCHANGE SECTION HEADER
+        # -------------------------
+        exch_header = QAction("— Exchange —", self)
+        exch_header.setEnabled(False)
+        exch_header.setSeparator(False)
+        exch_header.setIconVisibleInMenu(False)
+        menu.addAction(exch_header)
+
+        # Exchange action (for now only this one)
+        delegate_action = QAction("Grant SMB Full Delegation", self)
+        delegate_action.triggered.connect(self.open_grant_smb_full_dialog)
+        menu.addAction(delegate_action)
+
+        # Future:
+        # sendas_action = QAction("Grant SMB Send As Delegation", self)
+        # sendas_action.triggered.connect(self.open_send_as_dialog)
+        # menu.addAction(sendas_action)
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
@@ -3491,6 +3778,50 @@ class OffboardManager(QWidget):
         # Show dialog
         dlg.exec()
 
+    def open_grant_smb_full_dialog(self):
+        selected_rows = self.identity_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # Identify the UPN column
+        upn_col = None
+        for col in range(self.identity_table.columnCount()):
+            header = self.identity_table.horizontalHeaderItem(col).text().strip().lower()
+            if any(k in header for k in ["upn", "userprincipalname", "email"]):
+                upn_col = col
+                break
+
+        if upn_col is None:
+            QMessageBox.critical(self, "Error", "No UPN or Email column found.")
+            return
+
+        # Extract UPNs from the selected table rows
+        user_upns = []
+        for idx in selected_rows:
+            item = self.identity_table.item(idx.row(), upn_col)
+            if item:
+                upn = item.text().strip()
+                if upn:
+                    user_upns.append(upn)
+
+        if not user_upns:
+            QMessageBox.warning(self, "Invalid Selection", "No valid UPNs found.")
+            return
+
+        # Load the latest Exchange report CSV
+        csv_path = self.exchange_csv_selector.currentText()
+        if not csv_path or not csv_path.endswith(".csv"):
+            QMessageBox.critical(self, "Error", "No valid Exchange CSV selected.")
+            return
+
+        dlg = GrantSMBFullDialog(
+            parent=self,
+            user_upns=user_upns,
+            csv_path=csv_path
+        )
+        dlg.exec()
+
     # --- CSV handling ---
     def refresh_csv_lists(self, target=None):
         """
@@ -3505,6 +3836,7 @@ class OffboardManager(QWidget):
             "Database_Devices",
             "Database_Apps",
             "Database_Groups",
+            "Database_Exchange",
             "Powershell_Logs",
             "JSONs",
             "Random_Users",
@@ -3531,6 +3863,11 @@ class OffboardManager(QWidget):
         groups_dir = os.path.join(base_dir, "Database_Groups")
         groups_csvs = glob.glob(os.path.join(groups_dir, "*_EntraGroups.csv"))
         groups_csvs.sort(key=os.path.getmtime, reverse=True)
+
+        # Exchange CSVs
+        exchange_dir = os.path.join(base_dir, "Database_Exchange")
+        exchange_csvs = glob.glob(os.path.join(exchange_dir, "*_ExchangeReport.csv"))
+        exchange_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # --- selective refresh logic ---
         if target in [None, "identity"]:
@@ -3572,6 +3909,16 @@ class OffboardManager(QWidget):
                     self.groups_dash_selector.addItem(f)
                 self.groups_dash_selector.setCurrentIndex(0)
 
+        if target in [None, "exchange"]:
+            if hasattr(self, "exchange_dash_selector"):
+                self.exchange_dash_selector.clear()
+                if not exchange_csvs:
+                    self.exchange_dash_selector.addItem("No CSV found")
+                else:
+                    for f in exchange_csvs:
+                        self.exchange_dash_selector.addItem(f)
+                    self.exchange_dash_selector.setCurrentIndex(0)
+
     def handle_tab_click(self, index):
         """Handle clicks on dashboard tabs including the Refresh pseudo-tab."""
         tab_count = self.dashboard_tabs.count()
@@ -3594,6 +3941,8 @@ class OffboardManager(QWidget):
             self.refresh_csv_lists("apps")
         elif idx == 3:
             self.refresh_csv_lists("groups")
+        elif idx == 4:
+            self.refresh_csv_lists("exchange")
 
 
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
@@ -3701,6 +4050,35 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
 
+    def load_selected_exchange_csv(self):
+        """Load the selected Exchange CSV and display it in the Exchange table."""
+        path = self.exchange_csv_selector.currentText()
+        if not path or not path.endswith(".csv"):
+            return
+
+        try:
+            import csv
+            # Auto detect delimiter
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                try:
+                    delimiter = csv.Sniffer().sniff(sample).delimiter
+                except Exception:
+                    delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            self.current_exchange_df = df.copy()
+
+            # Display full table first
+            self.display_exchange_dataframe(self.current_exchange_df)
+
+            # Apply filters if a search is already active
+            if hasattr(self, "exchange_search") and self.exchange_search.text().strip():
+                self.filter_exchange_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load Exchange CSV:\n{e}")
+
     def display_apps_dataframe(self, df: pd.DataFrame):
         """Render a pandas DataFrame into the apps_table widget."""
         self.apps_table.clear()
@@ -3747,6 +4125,30 @@ class OffboardManager(QWidget):
 
         self.groups_table.resizeColumnsToContents()
 
+    def display_exchange_dataframe(self, df: pd.DataFrame):
+        """Render a pandas DataFrame into the exchange_table widget."""
+        self.exchange_table.clear()
+
+        if df is None or df.empty:
+            self.exchange_table.setRowCount(0)
+            self.exchange_table.setColumnCount(0)
+            return
+
+        # Set up headers
+        self.exchange_table.setRowCount(len(df))
+        self.exchange_table.setColumnCount(len(df.columns))
+        self.exchange_table.setHorizontalHeaderLabels(df.columns.tolist())
+
+        # Populate rows
+        for r, row in enumerate(df.itertuples(index=False)):
+            for c, value in enumerate(row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.exchange_table.setItem(r, c, item)
+
+        # Auto size columns for readability
+        self.exchange_table.resizeColumnsToContents()
+
     def display_dataframe(self, df: pd.DataFrame):
         self.identity_table.setRowCount(0)
         self.identity_table.setColumnCount(len(df.columns))
@@ -3770,13 +4172,6 @@ class OffboardManager(QWidget):
                 self.devices_table.setItem(self.devices_table.rowCount() - 1, j, item)
 
         self.devices_table.resizeColumnsToContents()
-
-        # Register as the global device table reference
-        # self.device_table = self.devices_table
-
-        # Ensure context menu always attached after refresh
-        # self.devices_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        # self.devices_table.customContextMenuRequested.connect(self.open_device_context_menu)
 
     def filter_table(self):
         if not hasattr(self, "current_df") or self.current_df is None:
@@ -3933,6 +4328,26 @@ class OffboardManager(QWidget):
             filtered = df[mask]
 
         self.display_groups_dataframe(filtered)
+
+    def filter_exchange_table(self):
+        """Filter Exchange table by Shared Mailbox display name or Email Address."""
+        if not hasattr(self, "current_exchange_df"):
+            return
+
+        query = self.exchange_search.text().strip().lower()
+        if not query:
+            filtered = self.current_exchange_df
+        else:
+            df = self.current_exchange_df
+
+            mask = (
+                    df.get("Shared Mailbox", pd.Series([""] * len(df))).str.lower().str.contains(query) |
+                    df.get("Email Address", pd.Series([""] * len(df))).str.lower().str.contains(query)
+            )
+
+            filtered = df[mask]
+
+        self.display_exchange_dataframe(filtered)
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()
@@ -4662,6 +5077,20 @@ class OffboardManager(QWidget):
         if self.groups_csv_selector.count() > 0:
             self.groups_csv_selector.setCurrentIndex(0)
             self.load_selected_groups_csv()
+
+    def try_populate_exchange_csv(self):
+        """Populate the exchange_csv_selector with files from Database_Exchange"""
+        folder = os.path.join(os.path.dirname(__file__), "Database_Exchange")
+        self.exchange_csv_selector.clear()
+        if os.path.exists(folder):
+            files = [f for f in os.listdir(folder) if f.endswith("_ExchangeReport.csv")]
+            for f in sorted(files, reverse=True):
+                self.exchange_csv_selector.addItem(os.path.join(folder, f))
+
+        # Auto-load the most recent CSV if available
+        if self.exchange_csv_selector.count() > 0:
+            self.exchange_csv_selector.setCurrentIndex(0)
+            self.load_selected_exchange_csv()
 
     def set_default_path(self):
         """Let user select a default CSV directory (e.g. SharePoint sync folder)."""
@@ -5687,6 +6116,225 @@ class OffboardManager(QWidget):
         layout.addWidget(make_top_table("Top Roles Assigned", s("Assigned Roles")), r, 1)
         layout.addWidget(make_top_table("Top Owners", s("Assigned Owners")), r, 2)
 
+    def update_exchange_dashboard_from_csv(self, combo, layout):
+        """
+        Build the Exchange dashboard from the selected CSV file (Devices/Groups style).
+        Cards are clickable and filter the Exchange table view.
+        Expected headers:
+          "Shared Mailbox","Email Address","Last Sent By","Subject of Last Sent","Last Sent Date",
+          "Last Received From","Received Subject of Last Received","Last Received Date",
+          "Is Last Received Read?","Full Access Users","SendAs Users","Has X400 Address"
+        """
+        # ---- Clear layout ----
+        for i in reversed(range(layout.count())):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                w = item.widget()
+                layout.removeWidget(w)
+                w.deleteLater()
+
+        # ---- Load CSV ----
+        path = combo.currentText()
+        if not path or not path.endswith(".csv") or not os.path.exists(path):
+            layout.addWidget(QLabel("No CSV loaded"), 0, 0)
+            return
+
+        import csv
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                try:
+                    delimiter = csv.Sniffer().sniff(sample).delimiter
+                except Exception:
+                    delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+            self.current_exchange_df = df  # keep around for filters/table view
+        except Exception as e:
+            layout.addWidget(QLabel(f"Failed to load CSV: {e}"), 0, 0)
+            return
+
+        total = len(df)
+        if total == 0:
+            layout.addWidget(QLabel("No data available in this CSV"), 0, 0)
+            return
+
+        # ---- Helpers ----
+        def s(col):
+            return df[col].astype(str).fillna("") if col in df.columns else pd.Series([""] * total, dtype=str)
+
+        # Robust date parsing
+        sent_dt = pd.to_datetime(s("Last Sent Date"), errors="coerce", utc=True)
+        recv_dt = pd.to_datetime(s("Last Received Date"), errors="coerce", utc=True)
+        now = pd.Timestamp.utcnow()
+        days_30 = pd.Timedelta(days=30)
+
+        # Booleans
+        def non_empty(series):
+            return series.str.strip() != ""
+
+        unread_last_recv = s("Is Last Received Read?").str.strip().str.lower().isin(["false", "no", "0"])
+        has_full_access = non_empty(s("Full Access Users"))
+        has_send_as = non_empty(s("SendAs Users"))
+        has_x400 = s("Has X400 Address").str.strip().str.lower().isin(["true", "yes", "1"]) | non_empty(
+            s("Has X400 Address"))
+
+        recent_sent = sent_dt.notna() & ((now - sent_dt) <= days_30)
+        recent_recv = recv_dt.notna() & ((now - recv_dt) <= days_30)
+
+        # ---- Metrics ----
+        total_mailboxes = total
+        with_full_access = int(has_full_access.sum())
+        with_send_as = int(has_send_as.sum())
+        recent_activity_sent = int(recent_sent.sum())
+        recent_activity_recv = int(recent_recv.sum())
+        unread_last = int(unread_last_recv.sum())
+        with_x400 = int(has_x400.sum())
+
+        # ---- Card Factory ----
+        def make_card(title, value, color="#2c3e50", icon=None, subtitle="", on_click=None):
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #1a1a1a);
+                    border-radius: 12px;
+                    padding: 16px;
+                }}
+                QFrame:hover {{
+                    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {color}, stop:1 #333333);
+                }}
+                QLabel {{ color: white; background: transparent; }}
+            """)
+            shadow = QGraphicsDropShadowEffect()
+            shadow.setBlurRadius(25)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 160))
+            card.setGraphicsEffect(shadow)
+
+            vbox = QVBoxLayout(card)
+            title_row = QHBoxLayout()
+            if icon:
+                icon_lbl = QLabel(icon)
+                icon_lbl.setStyleSheet("font-size: 20px; margin-right: 8px; background: transparent;")
+                title_row.addWidget(icon_lbl)
+            title_lbl = QLabel(title)
+            title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
+            title_row.addWidget(title_lbl)
+            title_row.addStretch()
+            vbox.addLayout(title_row)
+
+            value_lbl = QLabel(str(value))
+            value_lbl.setStyleSheet("font-size: 28px; font-weight: bold; background: transparent;")
+            vbox.addWidget(value_lbl)
+
+            if subtitle:
+                sub_lbl = QLabel(subtitle)
+                sub_lbl.setStyleSheet("font-size: 12px; color: #bdc3c7; background: transparent;")
+                vbox.addWidget(sub_lbl)
+
+            if on_click:
+                card.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+                card.mousePressEvent = lambda e: on_click()
+
+            return card
+
+        # ---- Filter + bridge to table view ----
+        def show_filtered_exchange(key):
+            if key == "ALL":
+                filtered = df
+            elif key == "FULL_ACCESS":
+                filtered = df[has_full_access]
+            elif key == "SEND_AS":
+                filtered = df[has_send_as]
+            elif key == "RECENT_SENT":
+                filtered = df[recent_sent]
+            elif key == "RECENT_RECV":
+                filtered = df[recent_recv]
+            elif key == "UNREAD_LAST":
+                filtered = df[unread_last_recv]
+            elif key == "HAS_X400":
+                filtered = df[has_x400]
+            else:
+                filtered = df
+            # You already have a Groups analog; implement this to render Exchange table
+            self.display_exchange_dataframe(filtered)
+
+        # ---- Cards ----
+        cards = [
+            ("Total Shared Mailboxes", total_mailboxes, "#34495e", "📬", "All shared mailboxes",
+             lambda: show_filtered_exchange("ALL")),
+            ("With Full Access", with_full_access, "#2980b9", "🗝️", "",
+             lambda: show_filtered_exchange("FULL_ACCESS")),
+            ("With SendAs", with_send_as, "#9b59b6", "✉️", "",
+             lambda: show_filtered_exchange("SEND_AS")),
+            ("Active (Sent ≤30d)", recent_activity_sent, "#16a085", "📤", "",
+             lambda: show_filtered_exchange("RECENT_SENT")),
+            ("Active (Recv ≤30d)", recent_activity_recv, "#27ae60", "📥", "",
+             lambda: show_filtered_exchange("RECENT_RECV")),
+            ("Last Received Unread", unread_last, "#d35400", "🔔", "",
+             lambda: show_filtered_exchange("UNREAD_LAST")),
+            ("Has X400 Address", with_x400, "#8e44ad", "🧬", "",
+             lambda: show_filtered_exchange("HAS_X400")),
+        ]
+
+        cols = 3
+        r = c = 0
+        for title, val, col_hex, icon, sub, cb in cards:
+            layout.addWidget(make_card(title, val, col_hex, icon, sub, on_click=cb), r, c)
+            c += 1
+            if c == cols:
+                r += 1
+                c = 0
+
+        # ---- Top tables (compact, dark) ----
+        def make_top_table(title, series: pd.Series, n=10):
+            vc = series[series.str.strip().ne("")].value_counts().head(n)
+
+            frame = QFrame()
+            frame.setStyleSheet("""
+                QFrame { background-color: #2c3e50; border-radius: 12px; padding: 12px; }
+                QLabel { color: white; }
+                QTableWidget { background-color: #2c3e50; color: white; gridline-color: #555; }
+                QHeaderView::section { background-color: #2c3e50; color: white; font-weight: bold; }
+            """)
+            v = QVBoxLayout(frame)
+            t = QLabel(title)
+            t.setStyleSheet("font-size:14px; font-weight:bold;")
+            v.addWidget(t)
+
+            table = QTableWidget()
+            table.setRowCount(len(vc))
+            table.setColumnCount(2)
+            table.setHorizontalHeaderLabels(["Value", "Count"])
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+            for i, (val, count) in enumerate(vc.items()):
+                table.setItem(i, 0, QTableWidgetItem(str(val)))
+                table.setItem(i, 1, QTableWidgetItem(str(count)))
+
+            table.resizeColumnsToContents()
+            table.setFixedHeight(250)
+            v.addWidget(table)
+            return frame
+
+        # explode helpers for multi-valued columns (semicolon-separated)
+        def explode_top(series: pd.Series):
+            return (series.str.split(";")
+                    .explode()
+                    .astype(str)
+                    .str.strip()
+                    .replace("", pd.NA)
+                    .dropna())
+
+        layout.addWidget(make_top_table("Top 'Last Sent By'", s("Last Sent By")), r, 0)
+        layout.addWidget(make_top_table("Top Full Access Users", explode_top(s("Full Access Users"))), r, 1)
+        layout.addWidget(make_top_table("Top SendAs Users", explode_top(s("SendAs Users"))), r, 2)
+
     def show_filtered_users(self, column_name, filter_value):
         """Switch to Identity tab and show only users matching filter."""
         self.show_named_page("identity")
@@ -5800,6 +6448,43 @@ class OffboardManager(QWidget):
         except Exception as e:
             print(f"❌ show_filtered_groups error: {e}")
             QMessageBox.critical(self, "Error", f"Failed to filter groups:\n\n{e}")
+
+    def show_filtered_exchange(self, filter_type, filter_value=None):
+        """
+        Show the Exchange table and apply a filter based on the dashboard cards.
+        """
+        try:
+            if not hasattr(self, "current_exchange_df"):
+                QMessageBox.warning(self, "No Data", "No Exchange data is loaded yet.")
+                return
+
+            df = self.current_exchange_df.copy()
+
+            # --- Apply filters ---
+            if filter_type == "ALL":
+                filtered = df
+            elif filter_type == "UNREAD":
+                filtered = df[df["Is Last Received Read?"].astype(str).str.lower() == "false"]
+            elif filter_type == "FULL_ACCESS":
+                filtered = df[df["Full Access Users"].astype(str).str.strip() != ""]
+            elif filter_type == "SENDAS":
+                filtered = df[df["SendAs Users"].astype(str).str.strip() != ""]
+            else:
+                filtered = df
+
+            # --- Navigate to Exchange Table page ---
+            try:
+                if "exchange" in self.page_map:
+                    self.stacked.setCurrentWidget(self.page_map["exchange"])
+            except Exception:
+                pass
+
+            # --- Render table ---
+            self.display_exchange_dataframe(filtered)
+
+        except Exception as e:
+            print(f"❌ show_filtered_exchange error: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to filter Exchange report:\n\n{e}")
 
     def reload_app(self):
         """Restart the entire application."""

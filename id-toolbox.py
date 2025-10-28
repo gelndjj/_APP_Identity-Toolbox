@@ -1395,7 +1395,6 @@ class GenerateTAPDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Reset Password ---
-
 class GenerateResetPasswordDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1566,7 +1565,6 @@ class GenerateResetPasswordDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Revoke Session ---
-
 class RevokeSessionsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1682,7 +1680,6 @@ class RevokeSessionsDialog(QDialog):
         self.ok_button.setText("Revoke Sessions")
 
 # --- Get LAPS ---
-
 class RetrieveLAPSDialog(QDialog):
     def __init__(self, parent=None, device_names=None, console=None):
         super().__init__(parent)
@@ -3483,13 +3480,13 @@ class OffboardManager(QWidget):
             device_ids.append(device_id)
             device_names.append(device_name)
 
-        # ✅ Initialize Dialog WITH IDs & Names
+        # Initialize Dialog WITH IDs & Names
         dlg = RetrieveLAPSDialog(
             self,
             device_names=device_names,
             console=getattr(self, "console", None)
         )
-        dlg.device_ids = device_ids  # ✅ CRITICAL LINE
+        dlg.device_ids = device_ids
 
         # Show dialog
         dlg.exec()

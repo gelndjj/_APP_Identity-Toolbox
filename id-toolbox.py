@@ -3477,8 +3477,11 @@ class OffboardManager(QWidget):
 
         for idx in selected:
             row = idx.row()
-            device_ids.append(df.iloc[row, id_col])
-            device_names.append(df.iloc[row, name_col])
+            device_id = self.devices_table.item(row, id_col).text()
+            device_name = self.devices_table.item(row, name_col).text()
+
+            device_ids.append(device_id)
+            device_names.append(device_name)
 
         # ✅ Initialize Dialog WITH IDs & Names
         dlg = RetrieveLAPSDialog(

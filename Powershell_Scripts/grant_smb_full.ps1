@@ -1,41 +1,47 @@
 param(
-    [string]$UserUPNs,
-    [string]$SMBEmails
+    [string]$Mailboxes,
+    [string]$Users,
+    [string]$LogPath
 )
 
-$UserList = $UserUPNs -split ","
-$MailboxList = $SMBEmails -split ","
+$MailboxList = $Mailboxes -split ","
+$UserList = $Users -split ","
 
-Write-Host "Connecting to Exchange Online..." -ForegroundColor Cyan
-Connect-ExchangeOnline -ShowProgress $false
+Start-Transcript -Path $LogPath -Append | Out-Null
+
+Write-Output "###JSON_START###"
 
 $results = @()
 
+Connect-ExchangeOnline -ShowBanner:$false -ShowProgress:$false
+
 foreach ($mbx in $MailboxList) {
     foreach ($usr in $UserList) {
-        $status = "✅ Success"
         try {
             Add-MailboxPermission -Identity $mbx -User $usr `
-                -AccessRights FullAccess -InheritanceType All -AutoMapping:$false -ErrorAction Stop
+                -AccessRights FullAccess -InheritanceType All -AutoMapping:$false
 
-            $status = "✅ Access Granted"
-        }
-        catch {
-            if ($_ -like "*already has permissions*") {
-                $status = "⚠ Already Granted"
-            } else {
-                $status = "❌ Failed: $($_.Exception.Message)"
+            $results += [PSCustomObject]@{
+                UserUPN = $usr
+                Mailbox = $mbx
+                Status  = "✅ Access Granted"
             }
         }
-
-        $results += [PSCustomObject]@{
-            UserUPN    = $usr
-            Mailbox    = $mbx
-            Status     = $status
+        catch {
+            $results += [PSCustomObject]@{
+                UserUPN = $usr
+                Mailbox = $mbx
+                Status  = "❌ Failed: $($_.Exception.Message)"
+            }
         }
     }
 }
 
-$results | ConvertTo-Json -Depth 5 | Write-Output
 Disconnect-ExchangeOnline -Confirm:$false
+
+$results | ConvertTo-Json -Depth 5
+
+Write-Output "###JSON_END###"
+
+Stop-Transcript | Out-Null
 exit 0

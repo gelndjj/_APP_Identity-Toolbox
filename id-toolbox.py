@@ -213,6 +213,277 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
+class DataSyncDialog(QDialog):
+    """
+    Modern modal picker for running one or more 'retrieve/export' scripts sequentially.
+    Adds contextual descriptions for each dataset type.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Retrieve Tenant Data")
+        self.setMinimumSize(580, 420)
+
+        # --- Main Layout ---
+        main_layout = QVBoxLayout(self)
+
+        title_lbl = QLabel("Select the datasets you want to retrieve:")
+        title_lbl.setStyleSheet("font-size:16px; font-weight:600; margin-bottom:6px;")
+        main_layout.addWidget(title_lbl)
+
+        subtitle_lbl = QLabel(
+            "Each report will be generated using PowerShell scripts and saved in its corresponding folder.\n"
+            "Scripts run sequentially with a 5-second delay between each."
+        )
+        subtitle_lbl.setWordWrap(True)
+        subtitle_lbl.setStyleSheet("color:#b0b0b0; font-size:12px;")
+        main_layout.addWidget(subtitle_lbl)
+        main_layout.addSpacing(10)
+
+        # --- Sectioned Grid ---
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(10)
+        main_layout.addLayout(grid)
+
+        def make_checkbox(label, desc):
+            box = QCheckBox(label)
+            box_desc = QLabel(desc)
+            box_desc.setStyleSheet("color:#aaa; font-size:11px; margin-left:24px;")
+            v = QVBoxLayout()
+            v.addWidget(box)
+            v.addWidget(box_desc)
+            w = QWidget()
+            w.setLayout(v)
+            return box, w
+
+        # Checkboxes with descriptions
+        self.cb_id, w1 = make_checkbox("Identities", "Exports all Entra ID users with full attributes and license details.")
+        self.cb_dev, w2 = make_checkbox("Devices", "Retrieves all Intune-managed devices with OS, owner, and compliance data.")
+        self.cb_grp, w3 = make_checkbox("Groups", "Exports Entra ID groups with owners, members, nested groups, and role assignments.")
+        self.cb_exo, w4 = make_checkbox("Shared Mailboxes (Exchange)", "Generates Exchange report for all shared mailboxes and recent activity.")
+        self.cb_app, w5 = make_checkbox("Detected Apps (Intune)", "Retrieves installed app data across managed devices and aggregates usage.")
+        self.cb_ap,  w6 = make_checkbox("Access Packages", "Exports all Entra Entitlement Management Access Packages and assignments.")
+
+        # Add to grid
+        grid.addWidget(w1, 0, 0)
+        grid.addWidget(w2, 1, 0)
+        grid.addWidget(w3, 2, 0)
+        grid.addWidget(w4, 0, 1)
+        grid.addWidget(w5, 1, 1)
+        grid.addWidget(w6, 2, 1)
+
+        # --- Button Row ---
+        main_layout.addSpacing(15)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.run_btn = QPushButton("Run")
+        self.run_btn.setStyleSheet("font-weight:600; padding:6px 18px;")
+        self.run_btn.clicked.connect(self.start_run)
+        btns.addWidget(self.run_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet("padding:6px 18px;")
+        btns.addSpacing(10)
+        btns.addWidget(cancel_btn)
+        btns.addStretch(1)
+        main_layout.addLayout(btns)
+
+        # --- Runtime variables ---
+        self.tasks = []
+        self.task_index = -1
+        self.worker = None
+
+        # --- Unified style for dialog and message boxes ---
+        self.setStyleSheet("""
+            QDialog { 
+                background-color: #1e1e1e; 
+                color: white; 
+            }
+
+            QCheckBox { 
+                font-size: 13px; 
+            }
+
+            QPushButton {
+                background-color: #0078d7; 
+                color: white;
+                border-radius: 6px;
+            }
+            QPushButton:hover { 
+                background-color: #1083e0; 
+            }
+
+            /* MessageBox button styling */
+            QMessageBox QPushButton {
+                background-color: #0078d7;
+                color: white;
+                border-radius: 6px;
+                padding: 5px 16px;
+                font-weight: 600;
+            }
+            QMessageBox QPushButton:hover {
+                background-color: #1083e0;
+            }
+        """)
+
+    # ---------- Build task list & kick off ----------
+    def start_run(self):
+        parent = self.parent()
+        if not parent:
+            QMessageBox.critical(self, "Error", "No parent window context.")
+            return
+
+        # convenience
+        ps_dir  = getattr(parent, "ps_scripts_dir", "")
+        logs_dir = getattr(parent, "logs_dir", os.path.join(os.getcwd(), "Powershell_Logs"))
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # helper: build a task descriptor: (friendly_name, script_path, args, on_finish_callback)
+        def task(name, ps_name, args=None, on_finish=None):
+            return {
+                "name": name,
+                "script": os.path.join(ps_dir, ps_name),
+                "args": args or [],
+                "on_finish": on_finish
+            }
+
+        self.tasks = []
+        # Identities
+        if self.cb_id.isChecked():
+            self.tasks.append(task(
+                "Identities",
+                "retrieve_users_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_identity_csv")
+            ))
+        # Devices
+        if self.cb_dev.isChecked():
+            self.tasks.append(task(
+                "Devices",
+                "retrieve_devices_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_devices_csv")
+            ))
+        # Groups
+        if self.cb_grp.isChecked():
+            self.tasks.append(task(
+                "Groups",
+                "retrieve_grps_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_groups_csv")
+            ))
+        # Shared Mailboxes
+        if self.cb_exo.isChecked():
+            self.tasks.append(task(
+                "Shared Mailboxes",
+                "retrieve_smbs_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_exchange_csv")
+            ))
+        # Detected Apps (Intune)
+        if self.cb_app.isChecked():
+            self.tasks.append(task(
+                "Detected Apps (Intune)",
+                "retrieve_apps_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_apps_csv")
+            ))
+        # Access Packages (outputs a JSON)
+        if self.cb_ap.isChecked():
+            jsons_dir = getattr(parent, "jsons_dir", os.path.join(os.getcwd(), "JSONs"))
+            os.makedirs(jsons_dir, exist_ok=True)
+            out_json = os.path.join(jsons_dir, "AccessPackages.json")
+            self.tasks.append(task(
+                "Access Packages",
+                "export-entra_accesspackages.ps1",
+                ["-OutputPath", out_json],
+                None  # nothing to repopulate; dashboard isn't tied to AP JSON for now
+            ))
+
+        if not self.tasks:
+            QMessageBox.information(self, "Nothing selected", "Please select at least one dataset.")
+            return
+
+        self.run_btn.setEnabled(False)
+        self.run_btn.setText("Running...")
+        self.task_index = -1
+        self.run_next()
+
+    # ---------- Run current task, schedule next with a delay ----------
+    def run_next(self):
+        self.task_index += 1
+        if self.task_index >= len(self.tasks):
+            self.run_btn.setEnabled(True)
+            self.run_btn.setText("Run")
+            QMessageBox.information(self, "Done", "✅ Data retrieval complete.")
+            self.accept()
+            return
+
+        t = self.tasks[self.task_index]
+        parent = self.parent()
+
+        if not os.path.exists(t["script"]):
+            QMessageBox.critical(self, "Missing script", f"Script not found:\n{t['script']}")
+            # skip to next
+            QTimer.singleShot(5000, self.run_next)
+            return
+
+        # log file per task
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(getattr(parent, "logs_dir", os.getcwd()),
+                                f"{timestamp}_{os.path.basename(t['script'])}.log")
+
+        # show console and header
+        if getattr(parent, "console_output", None):
+            parent.console_output.append(f"\n▶ {t['name']} — starting…")
+            parent.console_output.append(f"Script: {t['script']}")
+            parent.console_output.append(f"Log:    {log_file}\n")
+            parent.show_named_page("console")
+
+        # build worker
+        from PyQt6 import QtGui  # for live scroll
+        self.worker = PowerShellLoggerWorker(t["script"], t["args"], log_file)
+
+        if getattr(parent, "console_output", None):
+            self.worker.output.connect(lambda line: (
+                parent.console_output.append(line),
+                parent.console_output.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+            ))
+
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, f"{t['name']} error", msg))
+        self.worker.finished.connect(lambda _: self.on_task_finished(t, log_file))
+
+        # keep log list fresh
+        if hasattr(parent, "refresh_log_list"):
+            self.worker.finished.connect(parent.refresh_log_list)
+
+        self.worker.start()
+
+    def on_task_finished(self, task, log_file):
+        parent = self.parent()
+        if getattr(parent, "console_output", None):
+            parent.console_output.append(f"✔ {task['name']} — finished.\nLog saved at:\n{log_file}\n")
+
+        # optional dashboard refresh per task
+        if callable(task.get("on_finish")):
+            try:
+                task["on_finish"]()
+            except Exception:
+                pass
+
+        # after each task completes, wait 5 seconds then continue
+        QTimer.singleShot(5000, self.run_next)
+
+    # ---------- tiny helper ----------
+    @staticmethod
+    def safe_call(obj, method_name):
+        if hasattr(obj, method_name):
+            try:
+                getattr(obj, method_name)()
+            except Exception:
+                pass
+
 #--- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
@@ -1395,7 +1666,6 @@ class GenerateTAPDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Reset Password ---
-
 class GenerateResetPasswordDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1566,7 +1836,6 @@ class GenerateResetPasswordDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
 
 # --- Revoke Session ---
-
 class RevokeSessionsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -1682,7 +1951,6 @@ class RevokeSessionsDialog(QDialog):
         self.ok_button.setText("Revoke Sessions")
 
 # --- Get LAPS ---
-
 class RetrieveLAPSDialog(QDialog):
     def __init__(self, parent=None, device_names=None, console=None):
         super().__init__(parent)
@@ -1898,7 +2166,7 @@ class GrantSMBFullDialog(QDialog):
         main_layout = QVBoxLayout(self)
         panels_layout = QHBoxLayout()
 
-        # LEFT = Selected Users list
+        # LEFT: Selected Users
         left = QVBoxLayout()
         left.addWidget(QLabel("Selected User(s)"))
         self.user_list = QListWidget()
@@ -1907,10 +2175,11 @@ class GrantSMBFullDialog(QDialog):
         left.addWidget(self.user_list)
         panels_layout.addLayout(left, 1)
 
-        # RIGHT = SMB Table
+        # RIGHT: Mailbox list
         right = QVBoxLayout()
         right.addWidget(QLabel("Available Shared Mailboxes"))
 
+        import pandas as pd
         try:
             df = pd.read_csv(self.csv_path, dtype=str).fillna("")
         except Exception as e:
@@ -1919,45 +2188,64 @@ class GrantSMBFullDialog(QDialog):
             return
 
         self.df = df
-        name_col = "Shared Mailbox"
-        smtp_col = "Email Address"
 
-        if name_col not in df.columns or smtp_col not in df.columns:
-            QMessageBox.critical(
-                self, "Invalid CSV",
-                f"Missing required columns:\n{name_col}\n{smtp_col}"
-            )
+        # ✅ Normalize column names
+        df.columns = [c.strip() for c in df.columns]
+
+        # ✅ Detect column containing mailbox SMTP
+        smtp_col = None
+        for col in df.columns:
+            if any(k in col.lower() for k in ["smtp", "email", "primarysmtp"]):
+                smtp_col = col
+                break
+
+        if smtp_col is None:
+            QMessageBox.critical(self, "Invalid CSV",
+                                "Cannot detect mailbox email column.\n"
+                                "Expected contains: SMTP / Email / PrimarySMTPAddress")
             self.close()
             return
 
+        # ✅ Detect Display name column
+        name_col = None
+        for col in df.columns:
+            if "display" in col.lower():
+                name_col = col
+                break
+        if name_col is None:
+            name_col = smtp_col  # fallback if missing
+
+        # ✅ Convert to mailbox list
         self.mailboxes = [
-            {"Name": row[name_col], "SMTP": row[smtp_col]}
+            {"DisplayName": row[name_col], "Mailbox": row[smtp_col]}
             for _, row in df.iterrows()
         ]
 
-        # Search filter
+        # ✅ Search bar
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search Shared Mailbox or SMTP...")
         self.search_box.textChanged.connect(self.filter_smbs)
         right.addWidget(self.search_box)
 
-        # Table
+        # ✅ SMB Table
         self.table = QTableWidget(len(self.mailboxes), 2)
         self.table.setHorizontalHeaderLabels(["Assign", "Shared Mailbox"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(0, 80)
+
         self.populate_table(self.mailboxes)
         right.addWidget(self.table)
 
         panels_layout.addLayout(right, 2)
         main_layout.addLayout(panels_layout)
 
-        # Buttons
+        # ✅ Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         self.ok_button = QPushButton("Grant Full Delegation")
         self.ok_button.clicked.connect(self.start_granting)
         btn_layout.addWidget(self.ok_button)
+
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
         btn_layout.addSpacing(10)
@@ -1965,13 +2253,17 @@ class GrantSMBFullDialog(QDialog):
         btn_layout.addStretch(1)
         main_layout.addLayout(btn_layout)
 
-    def populate_table(self, items):
-        self.table.setRowCount(len(items))
-        for i, smb in enumerate(items):
+    def populate_table(self, mailboxes):
+        self.table.setRowCount(len(mailboxes))
+        for i, smb in enumerate(mailboxes):
             chk = QTableWidgetItem()
             chk.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(i, 0, chk)
-            self.table.setItem(i, 1, QTableWidgetItem(smb["Name"]))
+
+            self.table.setItem(
+                i, 1,
+                QTableWidgetItem(smb.get("DisplayName", smb.get("Mailbox", "N/A")))
+            )
 
     def filter_smbs(self, text):
         text = text.lower()
@@ -1996,14 +2288,24 @@ class GrantSMBFullDialog(QDialog):
             "grant_smb_full.ps1"
         )
 
+        # Ensure logs folder exists
+        logs_dir = getattr(self.parent(), "logs_dir", os.path.join(os.getcwd(), "Powershell_Logs"))
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # New timestamped log file name
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(logs_dir, f"{timestamp}_SMB_FullDelegation.log")
+
         self.ok_button.setEnabled(False)
         self.ok_button.setText("⏳ Granting...")
 
+        # Include LogPath in PowerShell command
         command = [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
             "-UserUPNs", ",".join(self.user_upns),
-            "-SMBEmails", ",".join(m["SMTP"] for m in selected)
+            "-SMBEmails", ",".join(m["Mailbox"] for m in selected),
+            "-LogPath", log_file
         ]
 
         self.worker = AssignExchangeWorker(command)
@@ -2026,33 +2328,79 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Grant Full Delegation")
 
-        # Show stderr first if exists
-        if stderr.strip():
-            QMessageBox.warning(self, "PowerShell Warning", stderr)
+        output = stdout
 
-        # Display result output in a popup
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Delegation Results")
-        dlg.setMinimumSize(650, 400)
+        # Extract JSON block
+        import re, json
 
-        text_output = QTextEdit()
-        text_output.setReadOnly(True)
-        text_output.setText(stdout if stdout.strip() else "Completed successfully.")
+        m = re.search(r"###JSON_START###(.*?)###JSON_END###", stdout, re.DOTALL)
+        if m:
+            json_text = m.group(1).strip()
+            try:
+                data = json.loads(json_text)
+            except Exception:
+                data = []
 
-        layout = QVBoxLayout(dlg)
-        layout.addWidget(text_output)
+            if isinstance(data, dict):
+                data = [data]
 
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(lambda: (dlg.close(), self.accept()))
-        layout.addWidget(btn_close)
+            # Pretty HTML result table
+            html = """
+            <html>
+            <head>
+            <style>
+            table {
+                border-collapse: collapse;
+                width: 95%;
+            }
+            th {
+                background-color: #eeeeee;
+                font-weight: bold;
+            }
+            td, th {
+                border: 1px solid #999;
+                padding: 6px 10px;
+            }
+            </style>
+            </head>
+            <body>
+            <h3>Full Delegation Results</h3>
+            <table>
+            <tr><th>User</th><th>Mailbox</th><th>Status</th></tr>
+            """
+            for r in data:
+                html += f"<tr><td>{r.get('UserUPN', '')}</td><td>{r.get('Mailbox', '')}</td><td>{r.get('Status', '')}</td></tr>"
 
-        dlg.exec()
+            html += """
+            </table>
+            </body>
+            </html>
+            """
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Full Delegation Results")
+            dlg.resize(600, 300)
+            layout = QVBoxLayout(dlg)
+
+            view = QTextEdit()
+            view.setReadOnly(True)
+            view.setHtml(html)
+            layout.addWidget(view)
+
+            btn_close = QPushButton("Close")
+            btn_close.clicked.connect(lambda: dlg.close())
+            layout.addWidget(btn_close)
+
+            dlg.exec()
+            return
+
+        # fallback display raw text
+        QMessageBox.information(self, "Raw Output", "Full delegation completed.\nSee log for details.")
 
     def on_assignment_error(self, err: str):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
-
 
 #--- Application ---#
 class OffboardManager(QWidget):
@@ -2110,8 +2458,12 @@ class OffboardManager(QWidget):
             return btn
 
         # Buttons
-        self.connect_btn = styled_button("Connect to Entra")
-        self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
+        #self.connect_btn = styled_button("Connect to Entra")
+        #self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
+
+        # Buttons
+        self.connect_btn = styled_button("Retrieve Tenant Data")
+        self.connect_btn.clicked.connect(self.open_data_sync_dialog)
 
         self.upload_csv_btn = styled_button("Upload CSV Report")
         self.upload_csv_btn.clicked.connect(self.upload_csv_file)
@@ -2484,9 +2836,18 @@ class OffboardManager(QWidget):
         id_layout.addWidget(self.csv_selector)
 
         self.search_field = QLineEdit()
-        self.search_field.setPlaceholderText("Search by first or last name (starts with)...")
-        self.search_field.textChanged.connect(self.filter_table)
+        self.search_field.setPlaceholderText(
+            "Search users by name, UPN, or ID (multiple terms supported)..."
+        )
         id_layout.addWidget(self.search_field)
+
+        # Creating the search field:
+        self.setup_search_field(
+            self.search_field,
+            "current_df",  # the DataFrame attribute
+            self.display_dataframe,  # the display function
+            ["Id", "DisplayName", "First name", "Last name", "UserPrincipalName"]
+        )
 
         self.identity_table = QTableWidget()
         self.identity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -2511,11 +2872,19 @@ class OffboardManager(QWidget):
         self.devices_csv_selector.currentIndexChanged.connect(self.load_selected_devices_csv)
         dev_layout.addWidget(self.devices_csv_selector)
 
-        # Search field (UserDisplayName only)
+        # Search field
         self.devices_search = QLineEdit()
-        self.devices_search.setPlaceholderText("Search by UserDisplayName (starts with)...")
-        self.devices_search.textChanged.connect(self.filter_devices_table)
+        self.devices_search.setPlaceholderText(
+            "Search devices by name, user, OS, model, or serial (multiple terms)..."
+        )
         dev_layout.addWidget(self.devices_search)
+
+        self.setup_search_field(
+            self.devices_search,
+            "current_devices_df",
+            self.display_devices_dataframe,
+            ["DeviceName", "UserDisplayName", "OperatingSystem", "Model", "SerialNumber"]
+        )
 
         # Devices table
         self.devices_table = QTableWidget()
@@ -2544,9 +2913,17 @@ class OffboardManager(QWidget):
 
         # Search field (App or User)
         self.apps_search = QLineEdit()
-        self.apps_search.setPlaceholderText("Search by App or User (contains)...")
-        self.apps_search.textChanged.connect(self.filter_apps_table)
+        self.apps_search.setPlaceholderText(
+            "Search apps by name, user, device, or publisher (multiple terms)..."
+        )
         apps_layout.addWidget(self.apps_search)
+
+        self.setup_search_field(
+            self.apps_search,
+            "current_apps_df",
+            self.display_apps_dataframe,
+            ["AppDisplayName", "Users", "Devices", "Publisher", "Version"]
+        )
 
         # Apps table
         self.apps_table = QTableWidget()
@@ -2573,9 +2950,16 @@ class OffboardManager(QWidget):
 
         # Search field (App or User)
         self.groups_search = QLineEdit()
-        self.groups_search.setPlaceholderText("Search by Groups or Group Type (contains)...")
-        self.groups_search.textChanged.connect(self.filter_groups_table)
+        self.groups_search.setPlaceholderText(
+            "Search groups by name, type, owner, or member (multiple terms)..."
+        )
         groups_layout.addWidget(self.groups_search)
+        self.setup_search_field(
+            self.groups_search,
+            "current_groups_df",
+            self.display_groups_dataframe,
+            ["Display Name", "Group Type", "Owners", "Members"]
+        )
 
         # Groups table
         self.groups_table = QTableWidget()
@@ -2602,9 +2986,16 @@ class OffboardManager(QWidget):
 
         # Search field (by Mailbox name or Email)
         self.exchange_search = QLineEdit()
-        self.exchange_search.setPlaceholderText("Search by Shared Mailbox or Email Address (contains)...")
-        self.exchange_search.textChanged.connect(self.filter_exchange_table)
+        self.exchange_search.setPlaceholderText(
+            "Search mailboxes by name, address, or delegation (multiple terms)..."
+        )
         exchange_layout.addWidget(self.exchange_search)
+        self.setup_search_field(
+            self.exchange_search,
+            "current_exchange_df",
+            self.display_exchange_dataframe,
+            ["Shared Mailbox", "Email Address", "Full Access Users", "SendAs Users"]
+        )
 
         # Exchange table (Shared Mailboxes list)
         self.exchange_table = QTableWidget()
@@ -3209,25 +3600,9 @@ class OffboardManager(QWidget):
         else:
             QMessageBox.warning(self, "Navigation Error", f"Page name '{name}' does not exist in page_map.")
 
-    def confirm_connect_to_entra(self):
-        # Step 1: Ask if user wants to retrieve Entra users
-        reply = QMessageBox.question(
-            self,
-            "Connect to Entra",
-            "Do you want to connect to Entra and retrieve user data?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            self.run_powershell_script()
-        else:
-            # Still proceed to Access Package question, just skip user retrieval
-            self.ask_retrieve_access_packages()
-            return
-
-        # Once user data retrieval finishes → chain Access Package prompt
-        self.worker.finished.connect(self.ask_retrieve_access_packages)
+    def open_data_sync_dialog(self):
+        dlg = DataSyncDialog(self)
+        dlg.exec()
 
     def ask_retrieve_access_packages(self, _=None):
         reply = QMessageBox.question(
@@ -3240,64 +3615,6 @@ class OffboardManager(QWidget):
 
         if reply == QMessageBox.StandardButton.Yes:
             self.run_access_package_script()
-
-    def run_powershell_script(self):
-        script_path = os.path.join(self.ps_scripts_dir, "retrieve_users_data_batch.ps1")
-
-        # Use the logger worker (no UPN required here)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
-
-        self.console_output.clear()
-        self.worker = PowerShellLoggerWorker(script_path, [], log_file)
-
-        # Connect signals
-        self.worker.output.connect(lambda line: self.console_output.append(line))
-        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
-        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
-        self.worker.finished.connect(self.refresh_log_list)
-
-        # Update tenant info automatically after script finishes
-        self.worker.finished.connect(lambda _: self.update_tenant_info())
-
-        self.worker.start()
-        self.show_named_page("console")  # Switch to console tab
-
-    def run_access_package_script(self):
-        script_path = os.path.join(self.ps_scripts_dir, "export-entra_accesspackages.ps1")
-
-        if not os.path.exists(script_path):
-            QMessageBox.warning(
-                self,
-                "Missing Script",
-                f"The script '{os.path.basename(script_path)}' was not found in Powershell_Scripts.",
-            )
-            return
-
-        # Output JSON to JSONs folder
-        output_json_path = os.path.join(self.jsons_dir, "AccessPackages.json")
-
-        # Log file
-        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(self.logs_dir, f"{timestamp}_Export-EntraAccessPackages.log")
-
-        self.console_output.clear()
-        self.worker = PowerShellLoggerWorker(script_path, ["-OutputPath", output_json_path], log_file)
-
-        # Connect signals
-        self.worker.output.connect(lambda line: self.console_output.append(line))
-        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
-        self.worker.finished.connect(
-            lambda msg: QMessageBox.information(
-                self,
-                "Access Packages Retrieved",
-                f"✅ Access Packages export completed.\n\nSaved to:\n{output_json_path}",
-            )
-        )
-        self.worker.finished.connect(self.refresh_log_list)
-
-        self.worker.start()
-        self.show_named_page("console")
 
     def run_powershell_with_output(self, script_path, params: dict):
         self.console_output.clear()
@@ -3856,7 +4173,7 @@ class OffboardManager(QWidget):
 
         # Apps CSVs
         apps_dir = os.path.join(base_dir, "Database_Apps")
-        apps_csvs = glob.glob(os.path.join(apps_dir, "*_EntraApps.csv"))
+        apps_csvs = glob.glob(os.path.join(apps_dir, "*_IntuneDetectedApps.csv"))
         apps_csvs.sort(key=os.path.getmtime, reverse=True)
 
         # Groups CSVs
@@ -3961,7 +4278,12 @@ class OffboardManager(QWidget):
 
             # if there's already text in the search box, apply it
             if self.search_field.text().strip():
-                self.filter_table()
+                self._filter_generic(
+                    "current_df",
+                    self.search_field.text().strip().lower(),
+                    self.display_dataframe,
+                    ["Id", "DisplayName", "GivenName", "Surname", "UserPrincipalName"]
+                )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load CSV:\n{e}")
@@ -3987,7 +4309,12 @@ class OffboardManager(QWidget):
 
             # if search text exists, apply it
             if self.devices_search.text().strip():
-                self.filter_devices_table()
+                self._filter_generic(
+                    "current_devices_df",
+                    self.devices_search.text().strip().lower(),
+                    self.display_devices_dataframe,
+                    ["DeviceName", "UserDisplayName", "OperatingSystem", "Model", "SerialNumber"]
+                )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Devices CSV:\n{e}")
@@ -4016,7 +4343,12 @@ class OffboardManager(QWidget):
 
             # Apply existing search if any
             if self.apps_search.text().strip():
-                self.filter_apps_table()
+                self._filter_generic(
+                    "current_apps_df",
+                    self.apps_search.text().strip().lower(),
+                    self.display_apps_dataframe,
+                    ["AppDisplayName", "Users", "Devices", "Publisher", "Version"]
+                )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
@@ -4045,7 +4377,12 @@ class OffboardManager(QWidget):
 
             # Apply existing search if any
             if self.groups_search.text().strip():
-                self.filter_groups_table()
+                self._filter_generic(
+                    "current_groups_df",
+                    self.groups_search.text().strip().lower(),
+                    self.display_groups_dataframe,
+                    ["Display Name", "Group Type", "Owners", "Members"]
+                )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Apps CSV:\n{e}")
@@ -4058,7 +4395,7 @@ class OffboardManager(QWidget):
 
         try:
             import csv
-            # Auto detect delimiter
+            # --- Auto detect delimiter ---
             with open(path, "r", encoding="utf-8") as f:
                 sample = f.read(2048)
                 try:
@@ -4066,21 +4403,27 @@ class OffboardManager(QWidget):
                 except Exception:
                     delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
 
+            # --- Load CSV into DataFrame ---
             df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
             self.current_exchange_df = df.copy()
 
-            # Display full table first
+            # --- Show full table first ---
             self.display_exchange_dataframe(self.current_exchange_df)
 
-            # Apply filters if a search is already active
+            # --- Apply search filter if search field not empty ---
             if hasattr(self, "exchange_search") and self.exchange_search.text().strip():
-                self.filter_exchange_table()
+                self._filter_generic(
+                    "current_exchange_df",
+                    self.exchange_search.text().strip().lower(),
+                    self.display_exchange_dataframe,
+                    ["Shared Mailbox", "Email Address", "Full Access Users", "SendAs Users"]
+                )
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Exchange CSV:\n{e}")
 
     def display_apps_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the apps_table widget."""
+        """Render Detected Apps summary report into the Applications table."""
         self.apps_table.clear()
 
         if df is None or df.empty:
@@ -4088,22 +4431,51 @@ class OffboardManager(QWidget):
             self.apps_table.setColumnCount(0)
             return
 
-        # Set up headers
-        self.apps_table.setRowCount(len(df))
-        self.apps_table.setColumnCount(len(df.columns))
-        self.apps_table.setHorizontalHeaderLabels(df.columns.tolist())
+        # --- Define column order for consistency ---
+        expected_cols = [
+            "AppDisplayName", "Version", "Publisher", "Platform",
+            "DeviceCount", "UserCount", "Devices", "Users"
+        ]
 
-        # Fill data
+        # Reorder columns if needed (ignore missing safely)
+        cols = [c for c in expected_cols if c in df.columns]
+        df = df[cols]
+
+        # --- Table setup ---
+        self.apps_table.setRowCount(len(df))
+        self.apps_table.setColumnCount(len(cols))
+        self.apps_table.setHorizontalHeaderLabels(cols)
+
+        # --- Fill table ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # make read-only
+                text = str(value) if pd.notna(value) else ""
+                item = QTableWidgetItem(text)
+
+                # Center counts
+                if cols[c] in ("DeviceCount", "UserCount"):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                # Word wrap for long lists (Devices/Users)
+                if cols[c] in ("Devices", "Users"):
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    item.setToolTip(text)  # hover tooltip for full list
+
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.apps_table.setItem(r, c, item)
 
+        # --- Visual tweaks ---
         self.apps_table.resizeColumnsToContents()
+        self.apps_table.horizontalHeader().setStretchLastSection(True)
+        self.apps_table.verticalHeader().setVisible(True)
+        self.apps_table.setAlternatingRowColors(True)
+        self.apps_table.setStyleSheet("""
+            QTableWidget { background-color: #1e1e1e; color: white; gridline-color: #444; }
+            QHeaderView::section { background-color: #2c2c2c; color: white; font-weight: bold; }
+        """)
 
     def display_groups_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the apps_table widget."""
+        """Render a pandas DataFrame into the groups_table widget with dark mode styling."""
         self.groups_table.clear()
 
         if df is None or df.empty:
@@ -4111,22 +4483,50 @@ class OffboardManager(QWidget):
             self.groups_table.setColumnCount(0)
             return
 
-        # Set up headers
+        # --- Set up headers ---
         self.groups_table.setRowCount(len(df))
         self.groups_table.setColumnCount(len(df.columns))
         self.groups_table.setHorizontalHeaderLabels(df.columns.tolist())
 
-        # Fill data
+        # --- Populate rows ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # make read-only
+                text = str(value) if pd.notna(value) else ""
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.groups_table.setItem(r, c, item)
 
+        # --- Layout adjustments ---
         self.groups_table.resizeColumnsToContents()
+        self.groups_table.horizontalHeader().setStretchLastSection(True)
+        self.groups_table.verticalHeader().setVisible(True)
+        self.groups_table.setAlternatingRowColors(True)
+
+        # --- Dark theme styling ---
+        self.groups_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                alternate-background-color: #252525;
+                color: white;
+                gridline-color: #444;
+                selection-background-color: #0078d7;
+                selection-color: white;
+            }
+            QHeaderView::section {
+                background-color: #2c2c2c;
+                color: white;
+                font-weight: bold;
+                border: none;
+                padding: 4px;
+            }
+            QTableCornerButton::section {
+                background-color: #2c2c2c;
+                border: none;
+            }
+        """)
 
     def display_exchange_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the exchange_table widget."""
+        """Render a pandas DataFrame into the exchange_table widget with dark alternating rows."""
         self.exchange_table.clear()
 
         if df is None or df.empty:
@@ -4134,79 +4534,145 @@ class OffboardManager(QWidget):
             self.exchange_table.setColumnCount(0)
             return
 
-        # Set up headers
+        # --- Set up headers ---
         self.exchange_table.setRowCount(len(df))
         self.exchange_table.setColumnCount(len(df.columns))
         self.exchange_table.setHorizontalHeaderLabels(df.columns.tolist())
 
-        # Populate rows
+        # --- Fill data ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                item = QTableWidgetItem(str(value))
+                item = QTableWidgetItem(str(value) if pd.notna(value) else "")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.exchange_table.setItem(r, c, item)
 
-        # Auto size columns for readability
+        # --- UI adjustments ---
         self.exchange_table.resizeColumnsToContents()
+        self.exchange_table.horizontalHeader().setStretchLastSection(True)
+        self.exchange_table.verticalHeader().setVisible(True)
+        self.exchange_table.setAlternatingRowColors(True)
+
+        # --- Styling ---
+        self.exchange_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                alternate-background-color: #252525;
+                color: white;
+                gridline-color: #444;
+                selection-background-color: #0078d7;
+                selection-color: white;
+            }
+            QHeaderView::section {
+                background-color: #2c2c2c;
+                color: white;
+                font-weight: bold;
+                border: none;
+                padding: 4px;
+            }
+            QTableCornerButton::section {
+                background-color: #2c2c2c;
+                border: none;
+            }
+        """)
 
     def display_dataframe(self, df: pd.DataFrame):
-        self.identity_table.setRowCount(0)
+        """Render a pandas DataFrame into the identity_table widget with dark alternating row colors."""
+        self.identity_table.clear()
+
+        if df is None or df.empty:
+            self.identity_table.setRowCount(0)
+            self.identity_table.setColumnCount(0)
+            return
+
+        # --- Set up headers ---
+        self.identity_table.setRowCount(len(df))
         self.identity_table.setColumnCount(len(df.columns))
         self.identity_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
+
+        # --- Fill data ---
         for r_idx, (_, row) in enumerate(df.iterrows()):
-            self.identity_table.insertRow(r_idx)
             for c_idx, val in enumerate(row):
-                self.identity_table.setItem(r_idx, c_idx, QTableWidgetItem(str(val)))
-
-    def display_devices_dataframe(self, df):
-        """Display the given dataframe in the devices table."""
-        self.devices_table.setRowCount(0)
-        self.devices_table.setColumnCount(len(df.columns))
-        self.devices_table.setHorizontalHeaderLabels(df.columns.tolist())
-
-        for i, row in df.iterrows():
-            self.devices_table.insertRow(self.devices_table.rowCount())
-            for j, val in enumerate(row):
-                item = QTableWidgetItem(str(val))
+                item = QTableWidgetItem(str(val) if pd.notna(val) else "")
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                self.devices_table.setItem(self.devices_table.rowCount() - 1, j, item)
+                self.identity_table.setItem(r_idx, c_idx, item)
 
+        # --- UI tweaks for modern look ---
+        self.identity_table.resizeColumnsToContents()
+        self.identity_table.horizontalHeader().setStretchLastSection(True)
+        self.identity_table.verticalHeader().setVisible(True)
+        self.identity_table.setAlternatingRowColors(True)
+
+        # --- Dark theme + alternating row colors ---
+        self.identity_table.setStyleSheet("""
+            QTableWidget { 
+                background-color: #1e1e1e; 
+                alternate-background-color: #252525;
+                color: white; 
+                gridline-color: #444;
+                selection-background-color: #0078d7;
+                selection-color: white;
+            }
+            QHeaderView::section { 
+                background-color: #2c2c2c; 
+                color: white; 
+                font-weight: bold; 
+                border: none;
+                padding: 4px;
+            }
+            QTableCornerButton::section {
+                background-color: #2c2c2c;
+                border: none;
+            }
+        """)
+
+    def display_devices_dataframe(self, df: pd.DataFrame):
+        """Render a pandas DataFrame into the devices_table widget with dark modern styling."""
+        self.devices_table.clear()
+
+        if df is None or df.empty:
+            self.devices_table.setRowCount(0)
+            self.devices_table.setColumnCount(0)
+            return
+
+        # --- Set up headers ---
+        self.devices_table.setRowCount(len(df))
+        self.devices_table.setColumnCount(len(df.columns))
+        self.devices_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
+
+        # --- Populate rows ---
+        for r, row in enumerate(df.itertuples(index=False)):
+            for c, value in enumerate(row):
+                text = str(value) if pd.notna(value) else ""
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.devices_table.setItem(r, c, item)
+
+        # --- Visual styling ---
         self.devices_table.resizeColumnsToContents()
-
-    def filter_table(self):
-        if not hasattr(self, "current_df") or self.current_df is None:
-            return
-
-        query = self.search_field.text().strip().lower()
-        if not query:
-            self.display_dataframe(self.current_df)
-            return
-
-        # allow multiple search terms separated by commas or spaces
-        terms = [q.strip() for q in query.replace(",", " ").split() if q.strip()]
-
-        df = self.current_df
-
-        # Safely get columns as strings
-        disp = df.get("DisplayName", pd.Series([""] * len(df))).fillna("").astype(str)
-        gn = df.get("GivenName", pd.Series([""] * len(df))).fillna("").astype(str)
-        sn = df.get("Surname", pd.Series([""] * len(df))).fillna("").astype(str)
-
-        # If GivenName/Surname empty, fall back to DisplayName split
-        gn = gn.where(gn.str.strip() != "", disp.str.split().str[0].fillna(""))
-        sn = sn.where(sn.str.strip() != "", disp.str.split().str[-1].fillna(""))
-
-        # Build mask: row matches if ANY term matches given/surname/displayname
-        mask = pd.Series([False] * len(df))
-        for t in terms:
-            mask |= (
-                    gn.str.lower().str.contains(t) |
-                    sn.str.lower().str.contains(t) |
-                    disp.str.lower().str.contains(t)
-            )
-
-        filtered = df[mask].copy()
-        self.display_dataframe(filtered)
+        self.devices_table.horizontalHeader().setStretchLastSection(True)
+        self.devices_table.verticalHeader().setVisible(True)
+        self.devices_table.setAlternatingRowColors(True)
+        self.devices_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #1e1e1e;
+                alternate-background-color: #252525;
+                color: white;
+                gridline-color: #444;
+                selection-background-color: #0078d7;
+                selection-color: white;
+            }
+            QHeaderView::section {
+                background-color: #2c2c2c;
+                color: white;
+                font-weight: bold;
+                border: none;
+                padding: 4px;
+            }
+            QTableCornerButton::section {
+                background-color: #2c2c2c;
+                border: none;
+            }
+        """)
 
     def filter_identity_table(self, filter_type: str):
         """Filter Identity table based on dashboard card clicked."""
@@ -4275,79 +4741,57 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Filtering failed for {filter_type}:\n{e}")
 
-    def filter_devices_table(self):
-        """Filter devices table by UserDisplayName prefix search."""
-        if not hasattr(self, "current_devices_df"):
+    def setup_search_field(self, line_edit, df_attr, display_fn, columns, delay=400):
+        """
+        Generic reusable search setup with debounced filtering and cached search text.
+
+        Args:
+            line_edit: The QLineEdit search box.
+            df_attr: String name of the dataframe attribute (e.g., 'current_df', 'current_apps_df').
+            display_fn: Callable to refresh the table (e.g., self.display_dataframe).
+            columns: List of column names to include in the search cache.
+            delay: Debounce delay in ms (default 400).
+        """
+        # Debounce timer
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(
+            lambda: self._filter_generic(df_attr, line_edit.text().strip().lower(), display_fn, columns))
+        line_edit.textChanged.connect(lambda: timer.start(delay))
+
+    def _filter_generic(self, df_attr, query, display_fn, columns):
+        """Internal reusable fast filtering function."""
+        df = getattr(self, df_attr, None)
+        if df is None or df.empty:
             return
 
-        text = self.devices_search.text().strip().lower()
-        if not text:
-            filtered = self.current_devices_df
-        else:
-            if "UserDisplayName" not in self.current_devices_df.columns:
-                QMessageBox.warning(self, "Warning", "UserDisplayName column not found in Devices CSV")
-                return
-            filtered = self.current_devices_df[
-                self.current_devices_df["UserDisplayName"].str.lower().str.startswith(text)
-            ]
-
-        self.display_devices_dataframe(filtered)
-
-    def filter_apps_table(self):
-        """Filter apps table by AppDisplayName or UserDisplayName (contains search)."""
-        if not hasattr(self, "current_apps_df"):
-            return
-
-        query = self.apps_search.text().strip().lower()
-        if not query:
-            filtered = self.current_apps_df
-        else:
-            df = self.current_apps_df
-            mask = (
-                    df.get("AppDisplayName", pd.Series([""] * len(df))).str.lower().str.contains(query) |
-                    df.get("UserDisplayName", pd.Series([""] * len(df))).str.lower().str.contains(query)
+        # Create cached combined search column if missing
+        if "_search_text" not in df.columns:
+            search_cols = [c for c in columns if c in df.columns]
+            df["_search_text"] = (
+                df[search_cols]
+                .fillna("")
+                .astype(str)
+                .agg(" ".join, axis=1)
+                .str.lower()
             )
-            filtered = df[mask]
+            setattr(self, df_attr, df)
 
-        self.display_apps_dataframe(filtered)
-
-    def filter_groups_table(self):
-        """Filter apps table by GrpDisplayName or UserDisplayName (contains search)."""
-        if not hasattr(self, "current_groups_df"):
+        # If empty search, restore all
+        if not query:
+            display_fn(df)
             return
 
-        query = self.groups_search.text().strip().lower()
-        if not query:
-            filtered = self.current_groups_df
-        else:
-            df = self.current_groups_df
-            mask = (
-                    df.get("Display Name", pd.Series([""] * len(df))).str.lower().str.contains(query) |
-                    df.get("Group Type", pd.Series([""] * len(df))).str.lower().str.contains(query)
-            )
-            filtered = df[mask]
+        # Split into keywords
+        terms = [t for t in query.replace(",", " ").split() if t.strip()]
 
-        self.display_groups_dataframe(filtered)
+        # Combine all keywords with AND condition (must match all)
+        mask = pd.Series(True, index=df.index)
+        for t in terms:
+            mask &= df["_search_text"].str.contains(t, na=False, regex=False)
 
-    def filter_exchange_table(self):
-        """Filter Exchange table by Shared Mailbox display name or Email Address."""
-        if not hasattr(self, "current_exchange_df"):
-            return
-
-        query = self.exchange_search.text().strip().lower()
-        if not query:
-            filtered = self.current_exchange_df
-        else:
-            df = self.current_exchange_df
-
-            mask = (
-                    df.get("Shared Mailbox", pd.Series([""] * len(df))).str.lower().str.contains(query) |
-                    df.get("Email Address", pd.Series([""] * len(df))).str.lower().str.contains(query)
-            )
-
-            filtered = df[mask]
-
-        self.display_exchange_dataframe(filtered)
+        filtered = df[mask]
+        display_fn(filtered)
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()
@@ -5055,7 +5499,7 @@ class OffboardManager(QWidget):
         folder = os.path.join(os.path.dirname(__file__), "Database_Apps")
         self.apps_csv_selector.clear()
         if os.path.exists(folder):
-            files = [f for f in os.listdir(folder) if f.endswith("_EntraApps.csv")]
+            files = [f for f in os.listdir(folder) if f.endswith("_IntuneDetectedApps.csv")]
             for f in sorted(files, reverse=True):
                 self.apps_csv_selector.addItem(os.path.join(folder, f))
 
@@ -6255,7 +6699,15 @@ class OffboardManager(QWidget):
                 filtered = df[has_x400]
             else:
                 filtered = df
-            # You already have a Groups analog; implement this to render Exchange table
+
+            # Switch to Exchange Table View
+            try:
+                if "exchange" in self.page_map:
+                    self.stacked.setCurrentWidget(self.page_map["exchange"])
+            except Exception:
+                pass
+
+            # Display filtered results
             self.display_exchange_dataframe(filtered)
 
         # ---- Cards ----

@@ -140,8 +140,13 @@ $timerProcess.Stop()
 
 # Export to CSV
 Write-Host "[+] Writing output to CSV..."
-$outputPath = "EntraID_Groups_Report_{0:yyyyMMdd_HHmm}.csv" -f (Get-Date)
-$groups | Select-Object -Property $CSVProperties | Export-Csv -Path $outputPath -NoTypeInformation -Encoding UTF8
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$folder = Join-Path (Split-Path -Parent $PSCommandPath) "..\Database_Groups"
+if (!(Test-Path $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
+$outputPath = Join-Path $folder ("{0}_EntraGroups.csv" -f $timestamp)
+
+$groups | Select-Object -Property $CSVProperties |
+    Export-Csv -Path $outputPath -NoTypeInformation -Encoding UTF8
 
 $scriptEnd = Get-Date
 

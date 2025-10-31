@@ -563,7 +563,6 @@ class DataSyncDialog(QDialog):
             except Exception:
                 pass
 
-
 # --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
@@ -595,7 +594,6 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -834,7 +832,6 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-
 # --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -861,7 +858,6 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -1137,7 +1133,6 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -1176,7 +1171,6 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1407,7 +1401,6 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -1561,7 +1554,6 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Generate Temporary Access Pass Worker ---
 class GenerateTAPWorker(QThread):
     finished = pyqtSignal(str, str)
@@ -1586,7 +1578,6 @@ class GenerateTAPWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GenerateTAPDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -1752,7 +1743,6 @@ class GenerateTAPDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Generate TAP(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
-
 
 # --- Reset Password ---
 class GenerateResetPasswordDialog(QDialog):
@@ -1924,7 +1914,6 @@ class GenerateResetPasswordDialog(QDialog):
         self.ok_button.setText("Reset Password(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Revoke Session ---
 class RevokeSessionsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -2039,7 +2028,6 @@ class RevokeSessionsDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Revoke Sessions")
-
 
 # --- Get LAPS ---
 class RetrieveLAPSDialog(QDialog):
@@ -2220,7 +2208,6 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
-
 # --- Exchange PART ---
 class AssignExchangeWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -2244,7 +2231,6 @@ class AssignExchangeWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GrantSMBFullDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -2494,6 +2480,118 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+class AdvancedIdentitySearchDialog(QDialog):
+    def __init__(self, parent, df, title="Advanced Search"):
+        super().__init__(parent)
+        self.df = df
+        self.setWindowTitle(f"{title} — Advanced Search")
+        self.setMinimumSize(550, 350)
+
+        layout = QVBoxLayout(self)
+
+        # Dynamic fields based on dataframe columns
+        self.fields = list(df.columns)
+
+        # Condition rows container
+        self.conditions_layout = QVBoxLayout()
+        layout.addLayout(self.conditions_layout)
+
+        # Button to add conditions
+        add_btn = QPushButton("+ Add Condition")
+        add_btn.clicked.connect(self.add_condition)
+        layout.addWidget(add_btn)
+
+        # AND / OR toggle
+        self.mode_toggle = QComboBox()
+        self.mode_toggle.addItems(["Match ANY (OR)", "Match ALL (AND)"])
+        layout.addWidget(self.mode_toggle)
+
+        # Action buttons
+        button_box = QHBoxLayout()
+
+        apply_btn = QPushButton("Apply Filter")
+        clear_btn = QPushButton("Clear Filters")
+        cancel_btn = QPushButton("Cancel")
+
+        apply_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        clear_btn.clicked.connect(self.clear_filters)
+
+        button_box.addWidget(apply_btn)
+        button_box.addWidget(clear_btn)
+        button_box.addWidget(cancel_btn)
+
+        layout.addLayout(button_box)
+
+        self.condition_rows = []
+        self.add_condition()  # Add first row by default
+
+    def add_condition(self):
+        row = {}
+
+        row_layout = QHBoxLayout()
+
+        # field
+        row["field"] = QComboBox()
+        row["field"].addItems(self.fields)
+        row_layout.addWidget(row["field"])
+
+        # operator
+        row["operator"] = QComboBox()
+        row["operator"].addItems(["contains", "equals", "is empty", "not empty"])
+        row_layout.addWidget(row["operator"])
+
+        # value
+        row["value"] = QLineEdit()
+        row["value"].setPlaceholderText("Value")
+        row_layout.addWidget(row["value"])
+
+        self.conditions_layout.addLayout(row_layout)
+        self.condition_rows.append(row)
+
+    def apply_filter(self, df):
+        if df is None or df.empty:
+            return df
+
+        masks = []
+        mode = self.mode_toggle.currentText()
+
+        for row in self.condition_rows:
+            field = row["field"].currentText()
+            op = row["operator"].currentText()
+            val = row["value"].text().strip().lower()
+
+            series = df[field].astype(str).str.lower().fillna("")
+
+            if op == "contains":
+                masks.append(series.str.contains(val, na=False))
+            elif op == "equals":
+                masks.append(series == val)
+            elif op == "is empty":
+                masks.append(series == "" )
+            elif op == "not empty":
+                masks.append(series != "")
+
+        if not masks:
+            return df
+
+        final_mask = masks[0]
+        for m in masks[1:]:
+            if "ANY" in mode:
+                final_mask |= m
+            else:
+                final_mask &= m
+
+        return df[final_mask]
+
+    def clear_filters(self):
+        # Ask main window to restore original full dataset
+        if self.parent():
+            try:
+                self.parent().clear_advanced_filter()
+            except Exception as e:
+                print("Error clearing filter:", e)
+        self.close()
 
 # --- Application ---#
 class OffboardManager(QWidget):
@@ -3545,7 +3643,107 @@ class OffboardManager(QWidget):
         shortcut_reload = QShortcut(QKeySequence("Ctrl+R"), self)
         shortcut_reload.activated.connect(self.reload_app)
 
+        # Global Advanced Search shortcut
+        shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        shortcut.activated.connect(self.open_advanced_search)
+
+        # macOS support
+        shortcut_mac = QShortcut(QKeySequence("Meta+F"), self)  # Meta = CMD key
+        shortcut_mac.activated.connect(self.open_advanced_search)
+
         self.ps_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Powershell_Scripts")
+
+    def open_advanced_search(self):
+        # Detect active page
+        page_name = None
+        for key, page in self.page_map.items():
+            if self.stacked.currentWidget() is page:
+                page_name = key
+                break
+
+        if not page_name:
+            return
+
+        # Map page to dataframe & table label
+        mapping = {
+            "identity": ("current_df", "Identities"),
+            "devices": ("current_devices_df", "Devices"),
+            "autopilot": ("current_autopilot_df", "Autopilot Devices"),
+            "apps": ("current_apps_df", "Applications"),
+            "groups": ("current_groups_df", "Groups"),
+            "exchange": ("current_exchange_df", "Shared Mailboxes"),
+            "dropped_csv": ("current_dropped_df", "Dropped CSV Data")
+        }
+
+        if page_name not in mapping:
+            return
+
+        df_attr, title = mapping[page_name]
+        df = getattr(self, df_attr, None)
+
+        if df is None or df.empty:
+            QMessageBox.information(self, "No Data", f"No data loaded for {title}")
+            return
+
+        dlg = AdvancedIdentitySearchDialog(self, df, title)  # pass DF + context title
+        if dlg.exec():
+            filtered_df = dlg.apply_filter(df)
+            # Display result
+            display_method = {
+                "identity": self.display_dataframe,
+                "devices": self.display_devices_dataframe,
+                "autopilot": self.display_autopilot_dataframe,
+                "apps": self.display_apps_dataframe,
+                "groups": self.display_groups_dataframe,
+                "exchange": self.display_exchange_dataframe
+            }.get(page_name)
+
+            if display_method:
+                display_method(filtered_df)
+
+    def clear_advanced_filter(self):
+        page = self.get_current_page_name()
+
+        if page == "identity" and hasattr(self, "current_df"):
+            self.display_dataframe(self.current_df)
+
+        elif page == "devices" and hasattr(self, "current_devices_df"):
+            self.display_devices_dataframe(self.current_devices_df)
+
+        elif page == "autopilot" and hasattr(self, "current_autopilot_df"):
+            self.display_autopilot_dataframe(self.current_autopilot_df)
+
+        elif page == "apps" and hasattr(self, "current_apps_df"):
+            self.display_apps_dataframe(self.current_apps_df)
+
+        elif page == "groups" and hasattr(self, "current_groups_df"):
+            self.display_groups_dataframe(self.current_groups_df)
+
+        elif page == "exchange" and hasattr(self, "current_exchange_df"):
+            self.display_exchange_dataframe(self.current_exchange_df)
+
+        # Clear quick search box too (optional)
+        try:
+            current_search = {
+                "identity": self.search_field,
+                "devices": self.devices_search,
+                "autopilot": self.autopilot_search,
+                "apps": self.apps_search,
+                "groups": self.groups_search,
+                "exchange": self.exchange_search
+            }.get(page)
+
+            if current_search:
+                current_search.clear()
+        except:
+            pass
+
+    def get_current_page_name(self):
+        """Return the currently visible stacked page key (identity, devices, etc)."""
+        for name, page in self.page_map.items():
+            if page == self.stacked.currentWidget():
+                return name
+        return None
 
     def enable_hidden_preview(self):
         """Easter egg: unlock the hidden Set Path button."""
@@ -7407,7 +7605,6 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

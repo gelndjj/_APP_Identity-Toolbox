@@ -2314,13 +2314,13 @@ class GrantSMBFullDialog(QDialog):
             for _, row in df.iterrows()
         ]
 
-        # ✅ Search bar
+        # Search bar
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search Shared Mailbox or SMTP...")
         self.search_box.textChanged.connect(self.filter_smbs)
         right.addWidget(self.search_box)
 
-        # ✅ SMB Table
+        # SMB Table
         self.table = QTableWidget(len(self.mailboxes), 2)
         self.table.setHorizontalHeaderLabels(["Assign", "Shared Mailbox"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -2931,17 +2931,10 @@ class OffboardManager(QWidget):
         id_layout.addWidget(self.csv_selector)
 
         self.search_field = QLineEdit()
-        self.search_field.setPlaceholderText("Search users (Id, name, UPN)...")
+        self.search_field.setPlaceholderText("Search users (name or UPN)...")
         id_layout.addWidget(self.search_field)
 
-        self.search_field.textChanged.connect(
-            lambda: self._filter_generic(
-                self.search_field,
-                "current_df",
-                self.display_dataframe,
-                ["Id", "DisplayName", "GivenName", "Surname", "UserPrincipalName"]
-            )
-        )
+        self.search_field.textChanged.connect(lambda: self.filter_identity_fast(self.search_field.text()))
 
         self.identity_table = QTableWidget()
         self.identity_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -5134,6 +5127,32 @@ class OffboardManager(QWidget):
                 mask |= series.str.contains(t, case=False, na=False, regex=False)
 
         display_func(df[mask])
+
+    def filter_identity_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_dataframe(self.current_df)
+            return
+
+        # Split multiple terms: comma OR space
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_df
+
+        # Only search in DisplayName + UPN for speed
+        disp = df["DisplayName"].str.lower()
+        upn = df["UserPrincipalName"].str.lower()
+
+        # OR logic — match if ANY term matches
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = disp.str.startswith(t) | upn.str.startswith(t)  # fast first
+            if not m.any():  # fallback only if nothing matched
+                m = disp.str.contains(t, na=False) | upn.str.contains(t, na=False)
+            mask |= m  # OR instead of AND
+
+        self.display_dataframe(df[mask])
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()

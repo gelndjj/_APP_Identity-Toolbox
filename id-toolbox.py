@@ -2272,7 +2272,6 @@ class GrantSMBFullDialog(QDialog):
         right = QVBoxLayout()
         right.addWidget(QLabel("Available Shared Mailboxes"))
 
-        import pandas as pd
         try:
             df = pd.read_csv(self.csv_path, dtype=str).fillna("")
         except Exception as e:
@@ -2282,10 +2281,10 @@ class GrantSMBFullDialog(QDialog):
 
         self.df = df
 
-        # ✅ Normalize column names
+        # Normalize column names
         df.columns = [c.strip() for c in df.columns]
 
-        # ✅ Detect column containing mailbox SMTP
+        # Detect column containing mailbox SMTP
         smtp_col = None
         for col in df.columns:
             if any(k in col.lower() for k in ["smtp", "email", "primarysmtp"]):
@@ -2299,7 +2298,7 @@ class GrantSMBFullDialog(QDialog):
             self.close()
             return
 
-        # ✅ Detect Display name column
+        # Detect Display name column
         name_col = None
         for col in df.columns:
             if "display" in col.lower():
@@ -2308,7 +2307,7 @@ class GrantSMBFullDialog(QDialog):
         if name_col is None:
             name_col = smtp_col  # fallback if missing
 
-        # ✅ Convert to mailbox list
+        # Convert to mailbox list
         self.mailboxes = [
             {"DisplayName": row[name_col], "Mailbox": row[smtp_col]}
             for _, row in df.iterrows()
@@ -2931,7 +2930,7 @@ class OffboardManager(QWidget):
         id_layout.addWidget(self.csv_selector)
 
         self.search_field = QLineEdit()
-        self.search_field.setPlaceholderText("Search users (name or UPN)...")
+        self.search_field.setPlaceholderText("Search users (DisplayName)...")
         id_layout.addWidget(self.search_field)
 
         self.search_field.textChanged.connect(lambda: self.filter_identity_fast(self.search_field.text()))
@@ -2962,16 +2961,11 @@ class OffboardManager(QWidget):
         # Search field
         self.devices_search = QLineEdit()
         self.devices_search.setPlaceholderText(
-            "Search devices by name, user, OS, model, or serial (multiple terms)..."
+            "Search devices by DeviceName or SerialNumber (multiple terms)..."
         )
         dev_layout.addWidget(self.devices_search)
 
-        self.setup_search_field(
-            self.devices_search,
-            "current_devices_df",
-            self.display_devices_dataframe,
-            ["DeviceName", "UserDisplayName", "OperatingSystem", "Model", "SerialNumber"]
-        )
+        self.devices_search.textChanged.connect(self.filter_devices_fast)
 
         # Devices table
         self.devices_table = QTableWidget()
@@ -3001,21 +2995,10 @@ class OffboardManager(QWidget):
         # Search field
         self.autopilot_search = QLineEdit()
         self.autopilot_search.setPlaceholderText(
-            "Search Autopilot devices by serial, user, model, tag, or ID (multiple terms)..."
+            "Search Autopilot devices by SerialNumber or AssignedUser (multiple terms)..."
         )
         autopilot_layout.addWidget(self.autopilot_search)
-
-        # Attach unified search logic
-        self.setup_search_field(
-            self.autopilot_search,
-            "current_autopilot_df",
-            self.display_autopilot_dataframe,
-            [
-                "SerialNumber", "Manufacturer", "Model", "GroupTag",
-                "EnrollmentState", "AssignedUser", "AADDeviceId",
-                "ManagedDeviceId", "UserlessEnrollmentStatus", "LastContact"
-            ]
-        )
+        self.autopilot_search.textChanged.connect(self.filter_autopilot_fast)
 
         # Autopilot table
         self.autopilot_table = QTableWidget()
@@ -3045,16 +3028,10 @@ class OffboardManager(QWidget):
         # Search field (App or User)
         self.apps_search = QLineEdit()
         self.apps_search.setPlaceholderText(
-            "Search apps by name, user, device, or publisher (multiple terms)..."
+            "Search apps by AppDisplayName or Publisher (multiple terms)..."
         )
         apps_layout.addWidget(self.apps_search)
-
-        self.setup_search_field(
-            self.apps_search,
-            "current_apps_df",
-            self.display_apps_dataframe,
-            ["AppDisplayName", "Users", "Devices", "Publisher", "Version"]
-        )
+        self.apps_search.textChanged.connect(self.filter_apps_fast)
 
         # Apps table
         self.apps_table = QTableWidget()
@@ -3082,15 +3059,10 @@ class OffboardManager(QWidget):
         # Search field (App or User)
         self.groups_search = QLineEdit()
         self.groups_search.setPlaceholderText(
-            "Search groups by name, type, owner, or member (multiple terms)..."
+            "Search groups by DisplayName or Group Type (multiple terms)..."
         )
         groups_layout.addWidget(self.groups_search)
-        self.setup_search_field(
-            self.groups_search,
-            "current_groups_df",
-            self.display_groups_dataframe,
-            ["Display Name", "Group Type", "Owners", "Members"]
-        )
+        self.groups_search.textChanged.connect(self.filter_groups_fast)
 
         # Groups table
         self.groups_table = QTableWidget()
@@ -3118,15 +3090,10 @@ class OffboardManager(QWidget):
         # Search field (by Mailbox name or Email)
         self.exchange_search = QLineEdit()
         self.exchange_search.setPlaceholderText(
-            "Search mailboxes by name, address, or delegation (multiple terms)..."
+            "Search mailboxes by Shared Mailbox Name or Email (multiple terms)..."
         )
         exchange_layout.addWidget(self.exchange_search)
-        self.setup_search_field(
-            self.exchange_search,
-            "current_exchange_df",
-            self.display_exchange_dataframe,
-            ["Shared Mailbox", "Email Address", "Full Access Users", "SendAs Users"]
-        )
+        self.exchange_search.textChanged.connect(self.filter_exchange_fast)
 
         # Exchange table (Shared Mailboxes list)
         self.exchange_table = QTableWidget()
@@ -5134,23 +5101,20 @@ class OffboardManager(QWidget):
             self.display_dataframe(self.current_df)
             return
 
-        # Split multiple terms: comma OR space
+        # Split on comma OR space
         terms = [t for t in text.replace(",", " ").split() if t]
 
         df = self.current_df
-
-        # Only search in DisplayName + UPN for speed
         disp = df["DisplayName"].str.lower()
-        upn = df["UserPrincipalName"].str.lower()
 
-        # OR logic — match if ANY term matches
+        # OR logic
         mask = pd.Series(False, index=df.index)
 
         for t in terms:
-            m = disp.str.startswith(t) | upn.str.startswith(t)  # fast first
-            if not m.any():  # fallback only if nothing matched
-                m = disp.str.contains(t, na=False) | upn.str.contains(t, na=False)
-            mask |= m  # OR instead of AND
+            m = disp.str.startswith(t)
+            if not m.any():  # fallback only if no prefix hits
+                m = disp.str.contains(t, na=False)
+            mask |= m  # OR logic
 
         self.display_dataframe(df[mask])
 
@@ -5181,6 +5145,127 @@ class OffboardManager(QWidget):
         else:
             self.log_selector.addItem("No matches found")
             self.console_output.setPlainText("No log contains: " + query)
+
+    def filter_devices_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_devices_dataframe(self.current_devices_df)
+            return
+
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_devices_df
+        serial = df["SerialNumber"].str.lower()
+        name = df["DeviceName"].str.lower()
+
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = serial.str.startswith(t) | name.str.startswith(t)
+
+            # fallback contains
+            if not m.any():
+                m = serial.str.contains(t, na=False) | name.str.contains(t, na=False)
+
+            mask |= m
+
+        self.display_devices_dataframe(df[mask])
+
+    def filter_autopilot_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_autopilot_dataframe(self.current_autopilot_df)
+            return
+
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_autopilot_df
+        sn = df["SerialNumber"].str.lower()
+        user = df["AssignedUser"].str.lower()
+
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = sn.str.startswith(t) | user.str.startswith(t)
+
+            if not m.any():
+                m = sn.str.contains(t, na=False) | user.str.contains(t, na=False)
+
+            mask |= m
+
+        self.display_autopilot_dataframe(df[mask])
+
+    def filter_groups_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_groups_dataframe(self.current_groups_df)
+            return
+
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_groups_df
+        name = df["Display Name"].str.lower()
+        gtype = df["Group Type"].str.lower()
+
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = name.str.startswith(t) | gtype.str.startswith(t)
+
+            if not m.any():
+                m = name.str.contains(t, na=False) | gtype.str.contains(t, na=False)
+
+            mask |= m
+
+        self.display_groups_dataframe(df[mask])
+
+    def filter_apps_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_apps_dataframe(self.current_apps_df)
+            return
+
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_apps_df
+        app = df["AppDisplayName"].str.lower()
+        pub = df["Publisher"].str.lower()
+
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = app.str.startswith(t) | pub.str.startswith(t)
+
+            if not m.any():
+                m = app.str.contains(t, na=False) | pub.str.contains(t, na=False)
+
+            mask |= m
+
+        self.display_apps_dataframe(df[mask])
+
+    def filter_exchange_fast(self, text):
+        text = text.strip().lower()
+        if not text:
+            self.display_exchange_dataframe(self.current_exchange_df)
+            return
+
+        terms = [t for t in text.replace(",", " ").split() if t]
+
+        df = self.current_exchange_df
+        name = df["Shared Mailbox"].str.lower()
+        mail = df["Email Address"].str.lower()
+
+        mask = pd.Series(False, index=df.index)
+
+        for t in terms:
+            m = name.str.startswith(t) | mail.str.startswith(t)
+
+            if not m.any():
+                m = name.str.contains(t, na=False) | mail.str.contains(t, na=False)
+
+            mask |= m
+
+        self.display_exchange_dataframe(df[mask])
 
     def upload_csv_file(self):
         """Open file dialog, copy CSV to Database_Identity, and load it."""

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QFrame, QGridLayout, QTabWidget, QMenu, QTextEdit, QGroupBox,
     QAbstractItemView, QHeaderView, QDateEdit, QCompleter, QSlider,
     QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog,
-    QFormLayout, QDialog, QSpinBox, QCheckBox, QListWidget
+    QFormLayout, QDialog, QListView, QCheckBox, QListWidget
 )
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush
@@ -14,6 +14,7 @@ from PyQt6 import QtGui, QtCore
 from faker import Faker
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
+
 
 class ClickableCard(QFrame):
     clicked = pyqtSignal()
@@ -25,6 +26,7 @@ class ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
 
 class PowerShellLoggerWorker(QThread):
     output = pyqtSignal(str)
@@ -69,6 +71,7 @@ class PowerShellLoggerWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorkerWithParam(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -97,6 +100,7 @@ class PowerShellWorkerWithParam(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+
 class PowerShellWorker(QThread):
     finished = pyqtSignal(str, str)  # status, message
 
@@ -115,9 +119,10 @@ class PowerShellWorker(QThread):
         except Exception as e:
             self.finished.emit("error", str(e))
 
+
 class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)          # live log lines
-    finished = pyqtSignal(str, str)   # status, message
+    output = pyqtSignal(str)  # live log lines
+    finished = pyqtSignal(str, str)  # status, message
 
     def __init__(self, command):
         super().__init__()
@@ -146,6 +151,7 @@ class StreamingPowerShellWorker(QThread):
 
         except Exception as e:
             self.finished.emit("error", str(e))
+
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -213,11 +219,13 @@ class CsvDropZone(QLabel):
                         self.on_csv_dropped(file_path)
                     break
 
+
 class DataSyncDialog(QDialog):
     """
     Modern modal picker for running one or more 'retrieve/export' scripts sequentially.
     Adds contextual descriptions for each dataset type.
     """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Retrieve Tenant Data")
@@ -257,20 +265,31 @@ class DataSyncDialog(QDialog):
             return box, w
 
         # Checkboxes with descriptions
-        self.cb_id, w1 = make_checkbox("Identities", "Exports all Entra ID users with full attributes and license details.")
-        self.cb_dev, w2 = make_checkbox("Devices", "Retrieves all Intune-managed devices with OS, owner, and compliance data.")
-        self.cb_grp, w3 = make_checkbox("Groups", "Exports Entra ID groups with owners, members, nested groups, and role assignments.")
-        self.cb_exo, w4 = make_checkbox("Shared Mailboxes (Exchange)", "Generates Exchange report for all shared mailboxes and recent activity.")
-        self.cb_app, w5 = make_checkbox("Detected Apps (Intune)", "Retrieves installed app data across managed devices and aggregates usage.")
-        self.cb_ap,  w6 = make_checkbox("Access Packages", "Exports all Entra Entitlement Management Access Packages and assignments.")
+        self.cb_id, w1 = make_checkbox("Identities",
+                                       "Exports all Entra ID users with full attributes and license details.")
+        self.cb_dev, w2 = make_checkbox("Devices",
+                                        "Retrieves all Intune-managed devices with OS, owner, and compliance data.")
+        self.cb_autopilot, w_ap = make_checkbox("Autopilot Devices",
+                                                "Retrieves Windows Autopilot devices with enrollment and user data.")
+        self.cb_grp, w3 = make_checkbox("Groups",
+                                        "Exports Entra ID groups with owners, members, nested groups, and role assignments.")
+        self.cb_exo, w4 = make_checkbox("Shared Mailboxes (Exchange)",
+                                        "Generates Exchange report for all shared mailboxes and recent activity.")
+        self.cb_app, w5 = make_checkbox("Detected Apps (Intune)",
+                                        "Retrieves installed app data across managed devices and aggregates usage.")
+        self.cb_ap, w6 = make_checkbox("Access Packages",
+                                       "Exports all Entra Entitlement Management Access Packages and assignments.")
 
-        # Add to grid
-        grid.addWidget(w1, 0, 0)
-        grid.addWidget(w2, 1, 0)
-        grid.addWidget(w3, 2, 0)
-        grid.addWidget(w4, 0, 1)
-        grid.addWidget(w5, 1, 1)
-        grid.addWidget(w6, 2, 1)
+        # Add to grid (left column)
+        grid.addWidget(w1, 0, 0)  # Identities
+        grid.addWidget(w2, 1, 0)  # Devices
+        grid.addWidget(w_ap, 2, 0)  # Autopilot Devices
+        grid.addWidget(w3, 3, 0)  # Groups
+
+        # Right column stays aligned
+        grid.addWidget(w4, 0, 1)  # Shared Mailboxes
+        grid.addWidget(w5, 1, 1)  # Apps
+        grid.addWidget(w6, 2, 1)  # Access Packages
 
         # --- Button Row ---
         main_layout.addSpacing(15)
@@ -294,38 +313,90 @@ class DataSyncDialog(QDialog):
         self.task_index = -1
         self.worker = None
 
-        # --- Unified style for dialog and message boxes ---
-        self.setStyleSheet("""
-            QDialog { 
-                background-color: #1e1e1e; 
-                color: white; 
-            }
+        # --- Apply Light/Dark Auto Theme ---
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":  # macOS
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            else:  # Windows/Linux fallback
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass
 
-            QCheckBox { 
-                font-size: 13px; 
-            }
-
-            QPushButton {
-                background-color: #0078d7; 
-                color: white;
-                border-radius: 6px;
-            }
-            QPushButton:hover { 
-                background-color: #1083e0; 
-            }
-
-            /* MessageBox button styling */
-            QMessageBox QPushButton {
-                background-color: #0078d7;
-                color: white;
-                border-radius: 6px;
-                padding: 5px 16px;
-                font-weight: 600;
-            }
-            QMessageBox QPushButton:hover {
-                background-color: #1083e0;
-            }
-        """)
+        if is_dark:
+            # DARK THEME
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: #1e1e1e;
+                    color: white;
+                }
+                QLabel {
+                    color: #e0e0e0;
+                }
+                QCheckBox {
+                    font-size: 13px;
+                    color: white;
+                }
+                QPushButton {
+                    background-color: #0078d7;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #1083e0;
+                }
+                QMessageBox QPushButton {
+                    background-color: #0078d7;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 5px 16px;
+                    font-weight: 600;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #1083e0;
+                }
+            """)
+        else:
+            # LIGHT THEME
+            self.setStyleSheet("""
+                QDialog {
+                    background-color: white;
+                    color: black;
+                }
+                QLabel {
+                    color: black;
+                }
+                QCheckBox {
+                    font-size: 13px;
+                    color: black;
+                }
+                QPushButton {
+                    background-color: #0078d7;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #1083e0;
+                }
+                QMessageBox QPushButton {
+                    background-color: #0078d7;
+                    color: white;
+                    border-radius: 6px;
+                    padding: 5px 16px;
+                    font-weight: 600;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #1083e0;
+                }
+            """)
 
     # ---------- Build task list & kick off ----------
     def start_run(self):
@@ -335,7 +406,7 @@ class DataSyncDialog(QDialog):
             return
 
         # convenience
-        ps_dir  = getattr(parent, "ps_scripts_dir", "")
+        ps_dir = getattr(parent, "ps_scripts_dir", "")
         logs_dir = getattr(parent, "logs_dir", os.path.join(os.getcwd(), "Powershell_Logs"))
         os.makedirs(logs_dir, exist_ok=True)
 
@@ -364,6 +435,14 @@ class DataSyncDialog(QDialog):
                 "retrieve_devices_data_batch.ps1",
                 [],
                 lambda: self.safe_call(parent, "try_populate_devices_csv")
+            ))
+        # Autopilot Devices (NEW)
+        if self.cb_autopilot.isChecked():
+            self.tasks.append(task(
+                "Autopilot Devices",
+                "retrieve_autopilot_devices_data_batch.ps1",
+                [],
+                lambda: self.safe_call(parent, "try_populate_autopilot_csv")
             ))
         # Groups
         if self.cb_grp.isChecked():
@@ -484,7 +563,8 @@ class DataSyncDialog(QDialog):
             except Exception:
                 pass
 
-#--- Groups Comparison---#
+
+# --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
@@ -515,6 +595,7 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -753,9 +834,10 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-#--- Groups Assignments---#
+
+# --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
-    finished = pyqtSignal(str, str)   # stdout, stderr
+    finished = pyqtSignal(str, str)  # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -779,6 +861,7 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -907,9 +990,9 @@ class AssignGroupsDialog(QDialog):
             "-File", script_path,
             "-UserUPNs", ",".join(self.user_upns),
             "-GroupIDs", ",".join([
-            grp["ObjectId"] for i, grp in enumerate(self.groups)
-            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
-        ])
+                grp["ObjectId"] for i, grp in enumerate(self.groups)
+                if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+            ])
         ]
 
         self.worker = AssignGroupsWorker(command)
@@ -1054,9 +1137,10 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-#--- Access Package ---#
+
+# --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
-    finished = pyqtSignal(str, str)   # stdout, stderr
+    finished = pyqtSignal(str, str)  # stdout, stderr
     error = pyqtSignal(str)
 
     def __init__(self, command):
@@ -1092,6 +1176,7 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1322,6 +1407,7 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -1475,6 +1561,7 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Generate Temporary Access Pass Worker ---
 class GenerateTAPWorker(QThread):
     finished = pyqtSignal(str, str)
@@ -1499,6 +1586,7 @@ class GenerateTAPWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GenerateTAPDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -1665,6 +1753,7 @@ class GenerateTAPDialog(QDialog):
         self.ok_button.setText("Generate TAP(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Reset Password ---
 class GenerateResetPasswordDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -1737,10 +1826,10 @@ class GenerateResetPasswordDialog(QDialog):
     def generate_random_password(self):
         """Generate a secure 14-char password with min, cap, digit, and special."""
         chars = (
-            random.choice(string.ascii_lowercase)
-            + random.choice(string.ascii_uppercase)
-            + random.choice(string.digits)
-            + random.choice("!@#$%^&*()-_=+[]")
+                random.choice(string.ascii_lowercase)
+                + random.choice(string.ascii_uppercase)
+                + random.choice(string.digits)
+                + random.choice("!@#$%^&*()-_=+[]")
         )
         chars += "".join(random.choices(string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{}", k=10))
         password = ''.join(random.sample(chars, len(chars)))  # shuffle
@@ -1834,6 +1923,7 @@ class GenerateResetPasswordDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Reset Password(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
+
 
 # --- Revoke Session ---
 class RevokeSessionsDialog(QDialog):
@@ -1949,6 +2039,7 @@ class RevokeSessionsDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Revoke Sessions")
+
 
 # --- Get LAPS ---
 class RetrieveLAPSDialog(QDialog):
@@ -2129,6 +2220,7 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
+
 # --- Exchange PART ---
 class AssignExchangeWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -2152,6 +2244,7 @@ class AssignExchangeWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GrantSMBFullDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -2201,8 +2294,8 @@ class GrantSMBFullDialog(QDialog):
 
         if smtp_col is None:
             QMessageBox.critical(self, "Invalid CSV",
-                                "Cannot detect mailbox email column.\n"
-                                "Expected contains: SMTP / Email / PrimarySMTPAddress")
+                                 "Cannot detect mailbox email column.\n"
+                                 "Expected contains: SMTP / Email / PrimarySMTPAddress")
             self.close()
             return
 
@@ -2402,7 +2495,8 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-#--- Application ---#
+
+# --- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
         super().__init__()
@@ -2458,8 +2552,8 @@ class OffboardManager(QWidget):
             return btn
 
         # Buttons
-        #self.connect_btn = styled_button("Connect to Entra")
-        #self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
+        # self.connect_btn = styled_button("Connect to Entra")
+        # self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
 
         # Buttons
         self.connect_btn = styled_button("Retrieve Tenant Data")
@@ -2526,13 +2620,14 @@ class OffboardManager(QWidget):
         self.btn_dashboard = QPushButton("Dashboard")
         self.btn_identity = QPushButton("Identities")
         self.btn_devices = QPushButton("Devices")
+        self.btn_autopilot_devices = QPushButton("Autopilot Devices")
         self.btn_apps = QPushButton("Applications")
         self.btn_groups = QPushButton("Groups")
         self.btn_exchange = QPushButton("Exchange")
         self.btn_console = QPushButton("Console")
 
         for b in [
-            self.btn_dashboard, self.btn_identity, self.btn_devices,
+            self.btn_dashboard, self.btn_identity, self.btn_devices, self.btn_autopilot_devices,
             self.btn_apps, self.btn_groups, self.btn_exchange, self.btn_console
         ]:
             b.setFixedHeight(40)
@@ -2836,17 +2931,16 @@ class OffboardManager(QWidget):
         id_layout.addWidget(self.csv_selector)
 
         self.search_field = QLineEdit()
-        self.search_field.setPlaceholderText(
-            "Search users by name, UPN, or ID (multiple terms supported)..."
-        )
+        self.search_field.setPlaceholderText("Search users (Id, name, UPN)...")
         id_layout.addWidget(self.search_field)
 
-        # Creating the search field:
-        self.setup_search_field(
-            self.search_field,
-            "current_df",  # the DataFrame attribute
-            self.display_dataframe,  # the display function
-            ["Id", "DisplayName", "First name", "Last name", "UserPrincipalName"]
+        self.search_field.textChanged.connect(
+            lambda: self._filter_generic(
+                self.search_field,
+                "current_df",
+                self.display_dataframe,
+                ["Id", "DisplayName", "GivenName", "Surname", "UserPrincipalName"]
+            )
         )
 
         self.identity_table = QTableWidget()
@@ -2901,6 +2995,50 @@ class OffboardManager(QWidget):
         self.stacked.addWidget(self.devices_page)
         self.page_map["devices"] = self.devices_page
         self.try_populate_devices_csv()
+
+        # --- Autopilot Devices page ---
+        self.autopilot_page = QWidget()
+        autopilot_layout = QVBoxLayout(self.autopilot_page)
+
+        # CSV selector for Autopilot reports
+        self.autopilot_csv_selector = QComboBox()
+        self.autopilot_csv_selector.currentIndexChanged.connect(self.load_selected_autopilot_csv)
+        autopilot_layout.addWidget(self.autopilot_csv_selector)
+
+        # Search field
+        self.autopilot_search = QLineEdit()
+        self.autopilot_search.setPlaceholderText(
+            "Search Autopilot devices by serial, user, model, tag, or ID (multiple terms)..."
+        )
+        autopilot_layout.addWidget(self.autopilot_search)
+
+        # Attach unified search logic
+        self.setup_search_field(
+            self.autopilot_search,
+            "current_autopilot_df",
+            self.display_autopilot_dataframe,
+            [
+                "SerialNumber", "Manufacturer", "Model", "GroupTag",
+                "EnrollmentState", "AssignedUser", "AADDeviceId",
+                "ManagedDeviceId", "UserlessEnrollmentStatus", "LastContact"
+            ]
+        )
+
+        # Autopilot table
+        self.autopilot_table = QTableWidget()
+        self.autopilot_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.autopilot_table.horizontalHeader().setStretchLastSection(True)
+        self.autopilot_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.autopilot_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.autopilot_table.setSortingEnabled(True)
+        autopilot_layout.addWidget(self.autopilot_table)
+
+        # Add to stacked pages
+        self.stacked.addWidget(self.autopilot_page)
+        self.page_map["autopilot"] = self.autopilot_page
+
+        # Load CSV list on page init
+        self.try_populate_autopilot_csv()
 
         # --- Apps page (table view) ---
         self.apps_page = QWidget()
@@ -3376,6 +3514,30 @@ class OffboardManager(QWidget):
 
         # Log selector
         self.log_selector = QComboBox()
+        self.log_selector.setMaxVisibleItems(12)
+        self.log_selector.setMinimumWidth(600)
+        self.log_selector.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+
+        # 👇 Force Qt popup (not macOS native one)
+        self.log_selector.setStyleSheet("QComboBox { combobox-popup: 0; }")
+
+        # Custom view ensures scroll works
+        view = QListView()
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        view.setUniformItemSizes(True)
+        self.log_selector.setView(view)
+
+        # Optional styling for dark mode
+        self.log_selector.setStyleSheet(self.log_selector.styleSheet() + """
+            QComboBox QAbstractItemView {
+                min-width: 600px;
+                background-color: #2c2c2c;
+                color: white;
+                selection-background-color: #0078d7;
+                border: 1px solid #444;
+            }
+        """)
+
         self.log_selector.currentIndexChanged.connect(self.load_selected_log)
         console_layout.addWidget(self.log_selector)
 
@@ -3388,7 +3550,8 @@ class OffboardManager(QWidget):
         # Console output
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
-        self.console_output.setStyleSheet("background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
+        self.console_output.setStyleSheet(
+            "background-color: black; color: white; font-family: 'Courier New', Courier, monospace;")
         console_layout.addWidget(self.console_output)
 
         # Populate logs at startup
@@ -3403,11 +3566,13 @@ class OffboardManager(QWidget):
         self.btn_dashboard.clicked.connect(lambda: self.show_named_page("dashboard"))
         self.btn_identity.clicked.connect(lambda: self.show_named_page("identity"))
         self.btn_devices.clicked.connect(lambda: self.show_named_page("devices"))
+        self.btn_autopilot_devices.clicked.connect(lambda: self.show_named_page("autopilot"))
         self.btn_apps.clicked.connect(lambda: self.show_named_page("apps"))
         self.btn_groups.clicked.connect(lambda: self.show_named_page("groups"))
         self.btn_exchange.clicked.connect(lambda: self.show_named_page("exchange"))
         self.btn_console.clicked.connect(lambda: self.show_named_page("console"))
-        self.btn_create_user.clicked.connect(lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
+        self.btn_create_user.clicked.connect(
+            lambda: (self.show_named_page("create_user"), self.load_access_packages_to_combobox()))
         self.btn_user_groups_comparison.clicked.connect(self.open_groups_comparison_window)
         self.btn_dropped_csv.clicked.connect(lambda: self.show_named_page("dropped_csv"))
 
@@ -3575,24 +3740,40 @@ class OffboardManager(QWidget):
                     if hasattr(self, "field_usagelocation"):
                         if self.field_usagelocation.count() == 0:
                             self.field_usagelocation.addItems([
-                            "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT", "AZ",
-                            "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV", "BR",
-                            "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN", "CX",
-                            "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ", "DM",
-                            "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF", "PF",
-                            "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG", "GN",
-                            "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE", "IM",
-                            "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA", "LV",
-                            "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML", "MT",
-                            "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ", "MM",
-                            "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM", "PK",
-                            "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO", "RU",
-                            "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS", "SC",
-                            "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR", "SJ",
-                            "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN", "TR",
-                            "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN", "VG",
-                            "VI", "WF", "EH", "YE", "ZM", "ZW"
-                        ])
+                                "AF", "AL", "DZ", "AS", "AD", "AO", "AI", "AQ", "AG", "AR", "AM", "AW", "AU", "AT",
+                                "AZ",
+                                "BS", "BH", "BD", "BB", "BY", "BE", "BZ", "BJ", "BM", "BT", "BO", "BA", "BW", "BV",
+                                "BR",
+                                "IO", "BN", "BG", "BF", "BI", "KH", "CM", "CA", "CV", "KY", "CF", "TD", "CL", "CN",
+                                "CX",
+                                "CC", "CO", "KM", "CG", "CD", "CK", "CR", "CI", "HR", "CU", "CY", "CZ", "DK", "DJ",
+                                "DM",
+                                "DO", "EC", "EG", "SV", "GQ", "ER", "EE", "ET", "FK", "FO", "FJ", "FI", "FR", "GF",
+                                "PF",
+                                "TF", "GA", "GM", "GE", "DE", "GH", "GI", "GR", "GL", "GD", "GP", "GU", "GT", "GG",
+                                "GN",
+                                "GW", "GY", "HT", "HM", "VA", "HN", "HK", "HU", "IS", "IN", "ID", "IR", "IQ", "IE",
+                                "IM",
+                                "IL", "IT", "JM", "JP", "JE", "JO", "KZ", "KE", "KI", "KP", "KR", "KW", "KG", "LA",
+                                "LV",
+                                "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MO", "MK", "MG", "MW", "MY", "MV", "ML",
+                                "MT",
+                                "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD", "MC", "MN", "ME", "MS", "MA", "MZ",
+                                "MM",
+                                "NA", "NR", "NP", "NL", "NC", "NZ", "NI", "NE", "NG", "NU", "NF", "MP", "NO", "OM",
+                                "PK",
+                                "PW", "PS", "PA", "PG", "PY", "PE", "PH", "PN", "PL", "PT", "PR", "QA", "RE", "RO",
+                                "RU",
+                                "RW", "BL", "SH", "KN", "LC", "MF", "PM", "VC", "WS", "SM", "ST", "SA", "SN", "RS",
+                                "SC",
+                                "SL", "SG", "SX", "SK", "SI", "SB", "SO", "ZA", "GS", "SS", "ES", "LK", "SD", "SR",
+                                "SJ",
+                                "SZ", "SE", "CH", "SY", "TW", "TJ", "TZ", "TH", "TL", "TG", "TK", "TO", "TT", "TN",
+                                "TR",
+                                "TM", "TC", "TV", "UG", "UA", "AE", "GB", "US", "UM", "UY", "UZ", "VU", "VE", "VN",
+                                "VG",
+                                "VI", "WF", "EH", "YE", "ZM", "ZW"
+                            ])
                         self.field_usagelocation.setCurrentText("")
 
             else:
@@ -4151,6 +4332,7 @@ class OffboardManager(QWidget):
         for folder in [
             "Database_Identity",
             "Database_Devices",
+            "Database_Autopilot_Devices",
             "Database_Apps",
             "Database_Groups",
             "Database_Exchange",
@@ -4261,7 +4443,6 @@ class OffboardManager(QWidget):
         elif idx == 4:
             self.refresh_csv_lists("exchange")
 
-
         QMessageBox.information(self, "Refreshed", "Dashboard successfully refreshed!")
 
     def load_selected_csv(self):
@@ -4318,6 +4499,46 @@ class OffboardManager(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load Devices CSV:\n{e}")
+
+    def load_selected_autopilot_csv(self):
+        """Load the selected Autopilot Devices CSV and display it in the table."""
+        path = self.autopilot_csv_selector.currentText()
+        if not path or not path.endswith(".csv"):
+            return
+
+        try:
+            # Auto-detect delimiter
+            import csv
+            with open(path, "r", encoding="utf-8") as f:
+                sample = f.read(2048)
+                try:
+                    delimiter = csv.Sniffer().sniff(sample).delimiter
+                except Exception:
+                    delimiter = ";" if ";" in sample else "," if "," in sample else "\t"
+
+            df = pd.read_csv(path, dtype=str, sep=delimiter).fillna("")
+
+            # Store dataframe for filtering/search
+            self.current_autopilot_df = df.copy()
+
+            # Show full table
+            self.display_autopilot_dataframe(self.current_autopilot_df)
+
+            # Apply existing search if any (uses your generic filter helper)
+            if hasattr(self, "autopilot_search") and self.autopilot_search.text().strip():
+                self._filter_generic(
+                    "current_autopilot_df",
+                    self.autopilot_search.text().strip().lower(),
+                    self.display_autopilot_dataframe,
+                    [
+                        "SerialNumber", "Manufacturer", "Model", "GroupTag",
+                        "EnrollmentState", "AssignedUser", "AADDeviceId",
+                        "ManagedDeviceId", "UserlessEnrollmentStatus", "LastContact"
+                    ]
+                )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load Autopilot CSV:\n{e}")
 
     def load_selected_apps_csv(self):
         """Load the selected Apps CSV and display it in the table."""
@@ -4431,13 +4652,11 @@ class OffboardManager(QWidget):
             self.apps_table.setColumnCount(0)
             return
 
-        # --- Define column order for consistency ---
+        # --- columns ---
         expected_cols = [
             "AppDisplayName", "Version", "Publisher", "Platform",
             "DeviceCount", "UserCount", "Devices", "Users"
         ]
-
-        # Reorder columns if needed (ignore missing safely)
         cols = [c for c in expected_cols if c in df.columns]
         df = df[cols]
 
@@ -4446,7 +4665,6 @@ class OffboardManager(QWidget):
         self.apps_table.setColumnCount(len(cols))
         self.apps_table.setHorizontalHeaderLabels(cols)
 
-        # --- Fill table ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
                 text = str(value) if pd.notna(value) else ""
@@ -4456,26 +4674,39 @@ class OffboardManager(QWidget):
                 if cols[c] in ("DeviceCount", "UserCount"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
-                # Word wrap for long lists (Devices/Users)
-                if cols[c] in ("Devices", "Users"):
+                # Wrap long lists + tooltip
+                elif cols[c] in ("Devices", "Users"):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-                    item.setToolTip(text)  # hover tooltip for full list
+                    item.setToolTip(text)
+                else:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.apps_table.setItem(r, c, item)
 
-        # --- Visual tweaks ---
         self.apps_table.resizeColumnsToContents()
         self.apps_table.horizontalHeader().setStretchLastSection(True)
         self.apps_table.verticalHeader().setVisible(True)
         self.apps_table.setAlternatingRowColors(True)
-        self.apps_table.setStyleSheet("""
-            QTableWidget { background-color: #1e1e1e; color: white; gridline-color: #444; }
-            QHeaderView::section { background-color: #2c2c2c; color: white; font-weight: bold; }
-        """)
+
+        # --- Theme Detection ---
+        is_dark = self.palette().color(self.backgroundRole()).value() < 128
+
+        if is_dark:
+            style = """
+                QTableWidget { background-color: #1e1e1e; color: white; gridline-color: #444; }
+                QHeaderView::section { background-color: #2c2c2c; color: white; font-weight: bold; }
+            """
+        else:
+            style = """
+                QTableWidget { background: white; color: black; gridline-color: #aaa; }
+                QHeaderView::section { background: #f2f2f2; color: black; font-weight: bold; }
+            """
+
+        self.apps_table.setStyleSheet(style)
 
     def display_groups_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the groups_table widget with dark mode styling."""
+        """Render dataframe into groups_table with auto light/dark theme."""
         self.groups_table.clear()
 
         if df is None or df.empty:
@@ -4483,50 +4714,56 @@ class OffboardManager(QWidget):
             self.groups_table.setColumnCount(0)
             return
 
-        # --- Set up headers ---
         self.groups_table.setRowCount(len(df))
         self.groups_table.setColumnCount(len(df.columns))
-        self.groups_table.setHorizontalHeaderLabels(df.columns.tolist())
+        self.groups_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
 
-        # --- Populate rows ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                text = str(value) if pd.notna(value) else ""
+                text = "" if pd.isna(value) else str(value)
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.groups_table.setItem(r, c, item)
 
-        # --- Layout adjustments ---
         self.groups_table.resizeColumnsToContents()
         self.groups_table.horizontalHeader().setStretchLastSection(True)
         self.groups_table.verticalHeader().setVisible(True)
         self.groups_table.setAlternatingRowColors(True)
 
-        # --- Dark theme styling ---
-        self.groups_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                alternate-background-color: #252525;
-                color: white;
-                gridline-color: #444;
-                selection-background-color: #0078d7;
-                selection-color: white;
-            }
-            QHeaderView::section {
-                background-color: #2c2c2c;
-                color: white;
-                font-weight: bold;
-                border: none;
-                padding: 4px;
-            }
-            QTableCornerButton::section {
-                background-color: #2c2c2c;
-                border: none;
-            }
-        """)
+        # Dark/light detection (same logic)
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            else:
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass
+
+        # Theme
+        if is_dark:
+            self.groups_table.setStyleSheet("""
+                QTableWidget { background-color:#1e1e1e; alternate-background-color:#252525; color:white;
+                               gridline-color:#444; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#2c2c2c; color:white; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#2c2c2c; border:none; }
+            """)
+        else:
+            self.groups_table.setStyleSheet("""
+                QTableWidget { background-color:white; alternate-background-color:#f2f2f2; color:black;
+                               gridline-color:#c0c0c0; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#e6e6e6; color:black; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#e6e6e6; border:none; }
+            """)
 
     def display_exchange_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the exchange_table widget with dark alternating rows."""
+        """Render dataframe into exchange_table with auto light/dark theme."""
         self.exchange_table.clear()
 
         if df is None or df.empty:
@@ -4534,49 +4771,56 @@ class OffboardManager(QWidget):
             self.exchange_table.setColumnCount(0)
             return
 
-        # --- Set up headers ---
         self.exchange_table.setRowCount(len(df))
         self.exchange_table.setColumnCount(len(df.columns))
-        self.exchange_table.setHorizontalHeaderLabels(df.columns.tolist())
+        self.exchange_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
 
-        # --- Fill data ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                item = QTableWidgetItem(str(value) if pd.notna(value) else "")
+                text = "" if pd.isna(value) else str(value)
+                item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.exchange_table.setItem(r, c, item)
 
-        # --- UI adjustments ---
         self.exchange_table.resizeColumnsToContents()
         self.exchange_table.horizontalHeader().setStretchLastSection(True)
         self.exchange_table.verticalHeader().setVisible(True)
         self.exchange_table.setAlternatingRowColors(True)
 
-        # --- Styling ---
-        self.exchange_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                alternate-background-color: #252525;
-                color: white;
-                gridline-color: #444;
-                selection-background-color: #0078d7;
-                selection-color: white;
-            }
-            QHeaderView::section {
-                background-color: #2c2c2c;
-                color: white;
-                font-weight: bold;
-                border: none;
-                padding: 4px;
-            }
-            QTableCornerButton::section {
-                background-color: #2c2c2c;
-                border: none;
-            }
-        """)
+        # Detect dark mode
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            else:
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass
+
+        # Apply theme
+        if is_dark:
+            self.exchange_table.setStyleSheet("""
+                QTableWidget { background-color:#1e1e1e; alternate-background-color:#252525; color:white;
+                               gridline-color:#444; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#2c2c2c; color:white; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#2c2c2c; border:none; }
+            """)
+        else:
+            self.exchange_table.setStyleSheet("""
+                QTableWidget { background-color:white; alternate-background-color:#f2f2f2; color:black;
+                               gridline-color:#c0c0c0; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#e6e6e6; color:black; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#e6e6e6; border:none; }
+            """)
 
     def display_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the identity_table widget with dark alternating row colors."""
+        """Render a pandas DataFrame into the identity_table with automatic light/dark styling."""
         self.identity_table.clear()
 
         if df is None or df.empty:
@@ -4584,49 +4828,90 @@ class OffboardManager(QWidget):
             self.identity_table.setColumnCount(0)
             return
 
-        # --- Set up headers ---
+        # --- Populate table ---
         self.identity_table.setRowCount(len(df))
         self.identity_table.setColumnCount(len(df.columns))
         self.identity_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
 
-        # --- Fill data ---
         for r_idx, (_, row) in enumerate(df.iterrows()):
             for c_idx, val in enumerate(row):
-                item = QTableWidgetItem(str(val) if pd.notna(val) else "")
+                text = "" if pd.isna(val) else str(val)
+                item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.identity_table.setItem(r_idx, c_idx, item)
 
-        # --- UI tweaks for modern look ---
+        # --- Layout behavior ---
         self.identity_table.resizeColumnsToContents()
         self.identity_table.horizontalHeader().setStretchLastSection(True)
         self.identity_table.verticalHeader().setVisible(True)
         self.identity_table.setAlternatingRowColors(True)
 
-        # --- Dark theme + alternating row colors ---
-        self.identity_table.setStyleSheet("""
-            QTableWidget { 
-                background-color: #1e1e1e; 
-                alternate-background-color: #252525;
-                color: white; 
-                gridline-color: #444;
-                selection-background-color: #0078d7;
-                selection-color: white;
-            }
-            QHeaderView::section { 
-                background-color: #2c2c2c; 
-                color: white; 
-                font-weight: bold; 
-                border: none;
-                padding: 4px;
-            }
-            QTableCornerButton::section {
-                background-color: #2c2c2c;
-                border: none;
-            }
-        """)
+        # --- Light/Dark OS Style detection ---
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":  # macOS
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            # Windows/Linux: rely on default Qt palette -> assume dark if background is dark
+            else:
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass  # fallback to default
+
+        if is_dark:
+            # --- Dark mode theme ---
+            self.identity_table.setStyleSheet("""
+                QTableWidget {
+                    background-color: #1e1e1e;
+                    alternate-background-color: #252525;
+                    color: white;
+                    gridline-color: #444;
+                    selection-background-color: #0078d7;
+                    selection-color: white;
+                }
+                QHeaderView::section {
+                    background-color: #2c2c2c;
+                    color: white;
+                    font-weight: bold;
+                    padding: 4px;
+                    border: none;
+                }
+                QTableCornerButton::section {
+                    background-color: #2c2c2c;
+                    border: none;
+                }
+            """)
+        else:
+            # --- Light mode theme ---
+            self.identity_table.setStyleSheet("""
+                QTableWidget {
+                    background-color: white;
+                    alternate-background-color: #f2f2f2;
+                    color: black;
+                    gridline-color: #c0c0c0;
+                    selection-background-color: #0078d7;
+                    selection-color: white;
+                }
+                QHeaderView::section {
+                    background-color: #e6e6e6;
+                    color: black;
+                    font-weight: bold;
+                    padding: 4px;
+                    border: none;
+                }
+                QTableCornerButton::section {
+                    background-color: #e6e6e6;
+                    border: none;
+                }
+            """)
 
     def display_devices_dataframe(self, df: pd.DataFrame):
-        """Render a pandas DataFrame into the devices_table widget with dark modern styling."""
+        """Render dataframe into devices_table with automatic light/dark styling."""
         self.devices_table.clear()
 
         if df is None or df.empty:
@@ -4634,45 +4919,112 @@ class OffboardManager(QWidget):
             self.devices_table.setColumnCount(0)
             return
 
-        # --- Set up headers ---
+        # Populate table
         self.devices_table.setRowCount(len(df))
         self.devices_table.setColumnCount(len(df.columns))
         self.devices_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
 
-        # --- Populate rows ---
         for r, row in enumerate(df.itertuples(index=False)):
             for c, value in enumerate(row):
-                text = str(value) if pd.notna(value) else ""
+                text = "" if pd.isna(value) else str(value)
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.devices_table.setItem(r, c, item)
 
-        # --- Visual styling ---
+        # Visual behavior
         self.devices_table.resizeColumnsToContents()
         self.devices_table.horizontalHeader().setStretchLastSection(True)
         self.devices_table.verticalHeader().setVisible(True)
         self.devices_table.setAlternatingRowColors(True)
-        self.devices_table.setStyleSheet("""
-            QTableWidget {
-                background-color: #1e1e1e;
-                alternate-background-color: #252525;
-                color: white;
-                gridline-color: #444;
-                selection-background-color: #0078d7;
-                selection-color: white;
-            }
-            QHeaderView::section {
-                background-color: #2c2c2c;
-                color: white;
-                font-weight: bold;
-                border: none;
-                padding: 4px;
-            }
-            QTableCornerButton::section {
-                background-color: #2c2c2c;
-                border: none;
-            }
-        """)
+
+        # Detect dark mode
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            else:
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass
+
+        # Apply theme
+        if is_dark:
+            self.devices_table.setStyleSheet("""
+                QTableWidget { background-color:#1e1e1e; alternate-background-color:#252525; color:white;
+                               gridline-color:#444; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#2c2c2c; color:white; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#2c2c2c; border:none; }
+            """)
+        else:
+            self.devices_table.setStyleSheet("""
+                QTableWidget { background-color:white; alternate-background-color:#f2f2f2; color:black;
+                               gridline-color:#c0c0c0; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#e6e6e6; color:black; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#e6e6e6; border:none; }
+            """)
+
+    def display_autopilot_dataframe(self, df: pd.DataFrame):
+        """Render DataFrame into autopilot_table with auto light/dark theme."""
+        self.autopilot_table.clear()
+
+        if df is None or df.empty:
+            self.autopilot_table.setRowCount(0)
+            self.autopilot_table.setColumnCount(0)
+            return
+
+        self.autopilot_table.setRowCount(len(df))
+        self.autopilot_table.setColumnCount(len(df.columns))
+        self.autopilot_table.setHorizontalHeaderLabels(df.columns.astype(str).tolist())
+
+        for r, row in enumerate(df.itertuples(index=False)):
+            for c, value in enumerate(row):
+                text = "" if pd.isna(value) else str(value)
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.autopilot_table.setItem(r, c, item)
+
+        self.autopilot_table.resizeColumnsToContents()
+        self.autopilot_table.horizontalHeader().setStretchLastSection(True)
+        self.autopilot_table.verticalHeader().setVisible(True)
+        self.autopilot_table.setAlternatingRowColors(True)
+
+        # Detect theme
+        is_dark = False
+        try:
+            import subprocess, platform
+            if platform.system() == "Darwin":
+                out = subprocess.check_output(
+                    ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                    stderr=subprocess.STDOUT
+                ).decode().strip()
+                is_dark = (out == "Dark")
+            else:
+                bg = self.palette().color(self.backgroundRole())
+                is_dark = bg.lightness() < 128
+        except:
+            pass
+
+        # Apply theme
+        if is_dark:
+            self.autopilot_table.setStyleSheet("""
+                QTableWidget { background-color:#1e1e1e; alternate-background-color:#252525; color:white;
+                               gridline-color:#444; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#2c2c2c; color:white; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#2c2c2c; border:none; }
+            """)
+        else:
+            self.autopilot_table.setStyleSheet("""
+                QTableWidget { background-color:white; alternate-background-color:#f2f2f2; color:black;
+                               gridline-color:#c0c0c0; selection-background-color:#0078d7; selection-color:white; }
+                QHeaderView::section { background-color:#e6e6e6; color:black; font-weight:bold; border:none; padding:4px; }
+                QTableCornerButton::section { background-color:#e6e6e6; border:none; }
+            """)
 
     def filter_identity_table(self, filter_type: str):
         """Filter Identity table based on dashboard card clicked."""
@@ -4741,57 +5093,47 @@ class OffboardManager(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Filtering failed for {filter_type}:\n{e}")
 
-    def setup_search_field(self, line_edit, df_attr, display_fn, columns, delay=400):
+    def setup_search_field(self, line_edit, df_attr, display_fn, columns):
         """
-        Generic reusable search setup with debounced filtering and cached search text.
-
-        Args:
-            line_edit: The QLineEdit search box.
-            df_attr: String name of the dataframe attribute (e.g., 'current_df', 'current_apps_df').
-            display_fn: Callable to refresh the table (e.g., self.display_dataframe).
-            columns: List of column names to include in the search cache.
-            delay: Debounce delay in ms (default 400).
+        Generic search setup: binds a QLineEdit to filter a DataFrame on text change.
         """
-        # Debounce timer
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(
-            lambda: self._filter_generic(df_attr, line_edit.text().strip().lower(), display_fn, columns))
-        line_edit.textChanged.connect(lambda: timer.start(delay))
-
-    def _filter_generic(self, df_attr, query, display_fn, columns):
-        """Internal reusable fast filtering function."""
-        df = getattr(self, df_attr, None)
-        if df is None or df.empty:
-            return
-
-        # Create cached combined search column if missing
-        if "_search_text" not in df.columns:
-            search_cols = [c for c in columns if c in df.columns]
-            df["_search_text"] = (
-                df[search_cols]
-                .fillna("")
-                .astype(str)
-                .agg(" ".join, axis=1)
-                .str.lower()
+        line_edit.textChanged.connect(
+            lambda: self._filter_generic(
+                line_edit,  # <-- pass the QLineEdit widget itself
+                df_attr,  # dataframe attribute name
+                display_fn,  # display function
+                columns  # columns to search in
             )
-            setattr(self, df_attr, df)
+        )
 
-        # If empty search, restore all
-        if not query:
-            display_fn(df)
+    def _filter_generic(self, search_box, df_attr, display_func, columns):
+        query = search_box.text().strip().lower()
+        df = getattr(self, df_attr, None)
+
+        if df is None or not isinstance(df, pd.DataFrame):
             return
 
-        # Split into keywords
-        terms = [t for t in query.replace(",", " ").split() if t.strip()]
+        if not query:
+            display_func(df)
+            return
 
-        # Combine all keywords with AND condition (must match all)
-        mask = pd.Series(True, index=df.index)
+        terms = [t.strip() for t in query.replace(",", " ").split() if t.strip()]
+
+        cols = {
+            col: df.get(col, pd.Series([""] * len(df))).astype(str).str.lower().fillna("")
+            for col in columns
+        }
+
+        mask = pd.Series(False, index=df.index)
+
         for t in terms:
-            mask &= df["_search_text"].str.contains(t, na=False, regex=False)
+            for col in columns:
+                series = df.get(col, pd.Series([""] * len(df))).fillna("").astype(str)
 
-        filtered = df[mask]
-        display_fn(filtered)
+                # safe contains (treat search as plain literal text)
+                mask |= series.str.contains(t, case=False, na=False, regex=False)
+
+        display_func(df[mask])
 
     def search_logs(self):
         query = self.log_search.text().strip().lower()
@@ -5076,7 +5418,8 @@ class OffboardManager(QWidget):
             "Password", "Job title", "Company name", "Department", "Employee ID", "City",
             "Country or region", "State or province", "Office location", "Street address",
             "Manager", "Sponsors", "Usage location", "ZIP or postal code", "Business phone"
-            "Mobile phone", "Other emails", "Age group", "Consent provided for minor", "Access Package"
+                                                                           "Mobile phone", "Other emails", "Age group",
+            "Consent provided for minor", "Access Package"
         ]
 
         try:
@@ -5493,6 +5836,24 @@ class OffboardManager(QWidget):
         if self.devices_csv_selector.count() > 0:
             self.devices_csv_selector.setCurrentIndex(0)
             self.load_selected_devices_csv()
+
+    def try_populate_autopilot_csv(self):
+        """Populate the autopilot_csv_selector with files from Database_Autopilot_Devices"""
+        folder = os.path.join(os.path.dirname(__file__), "Database_Autopilot_Devices")
+        self.autopilot_csv_selector.clear()
+
+        if os.path.exists(folder):
+            files = [
+                f for f in os.listdir(folder)
+                if f.endswith("_AutopilotDevices.csv")
+            ]
+            for f in sorted(files, reverse=True):
+                self.autopilot_csv_selector.addItem(os.path.join(folder, f))
+
+        # Auto-load newest CSV
+        if self.autopilot_csv_selector.count() > 0:
+            self.autopilot_csv_selector.setCurrentIndex(0)
+            self.load_selected_autopilot_csv()
 
     def try_populate_apps_csv(self):
         """Populate the apps_csv_selector with files from Database_Apps"""
@@ -6942,6 +7303,7 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

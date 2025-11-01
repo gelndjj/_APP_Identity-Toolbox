@@ -144,7 +144,7 @@ EntitlementManagement.ReadWrite.All
 |   ![IdDashboard](Screenshots/Identity_Dashboard.png)    | ![GroupsDashboard](Screenshots/Grps_Dashboard.png) |
 |:-------------------------------------------------------:|:--------------------------------------------------:|
 |                   Identity Dashboard                    |                  Groups Dashboard                  |
-| ![EntraUserCreation](Screenshots/EntraUserCreation.png) |        ![IdTable](Screenshots/IdTable.png)         |
+| ![EntraUserCreation](Screenshots/EntraUserCreation.png) |     ![IdTable](Screenshots/IdentityTable.png)      |
 |                   Entra User Creation                   |                  Identities Table                  |
 |  ![UsrGrpsComp](Screenshots/UserGroupsComparison.png)   |      ![PSConsole](Screenshots/PSConsole.png)       |
 |                 User Groups Comparison                  |                 PowerShell Console                 |

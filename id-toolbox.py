@@ -2317,7 +2317,7 @@ class GrantSMBFullDialog(QDialog):
         panels_layout.addLayout(right, 2)
         main_layout.addLayout(panels_layout)
 
-        # ✅ Buttons
+        # Buttons
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
         self.ok_button = QPushButton("Grant Full Delegation")
@@ -2381,8 +2381,8 @@ class GrantSMBFullDialog(QDialog):
         command = [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
-            "-UserUPNs", ",".join(self.user_upns),
-            "-SMBEmails", ",".join(m["Mailbox"] for m in selected),
+            "-Users", ",".join(self.user_upns),
+            "-Mailboxes", ",".join(m["Mailbox"] for m in selected),
             "-LogPath", log_file
         ]
 
@@ -2479,6 +2479,122 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
+
+class GrantSMBSendAsDialog(GrantSMBFullDialog):
+    def __init__(self, parent=None, user_upns=None, csv_path=None):
+        super().__init__(parent, user_upns, csv_path)
+        self.setWindowTitle("Grant SMB Send-As Delegation")
+        self.ok_button.setText("Grant Send-As")
+
+    def start_granting(self):
+        selected = [
+            self.mailboxes[i]
+            for i in range(len(self.mailboxes))
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not selected:
+            QMessageBox.warning(self, "No Selection", "Select at least one Shared Mailbox.")
+            return
+
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            "grant_smb_sendas.ps1"
+        )
+
+        logs_dir = getattr(self.parent(), "logs_dir", os.path.join(os.getcwd(), "Powershell_Logs"))
+        os.makedirs(logs_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = os.path.join(logs_dir, f"{timestamp}_SMB_SendAs.log")
+
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Granting...")
+
+        command = [
+            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-Users", ",".join(self.user_upns),
+            "-Mailboxes", ",".join(m["Mailbox"] for m in selected),
+            "-LogPath", log_file
+        ]
+
+        self.worker = AssignExchangeWorker(command)
+        self.worker.finished.connect(self.on_assignment_done)
+        self.worker.error.connect(self.on_assignment_error)
+        self.worker.start()
+
+    def on_assignment_done(self, stdout: str, stderr: str = ""):
+        self.ok_button.setEnabled(True)
+        self.ok_button.setText("Grant Send-As")
+
+        import re, json
+
+        m = re.search(r"###JSON_START###(.*?)###JSON_END###", stdout, re.DOTALL)
+        if m:
+            json_text = m.group(1).strip()
+            try:
+                data = json.loads(json_text)
+            except Exception:
+                data = []
+
+            if isinstance(data, dict):
+                data = [data]
+
+            # Pretty HTML result table
+            html = """
+            <html>
+            <head>
+            <style>
+            table {
+                border-collapse: collapse;
+                width: 95%;
+            }
+            th {
+                background-color: #eeeeee;
+                font-weight: bold;
+            }
+            td, th {
+                border: 1px solid #999;
+                padding: 6px 10px;
+            }
+            </style>
+            </head>
+            <body>
+            <h3>Send-As Delegation Results</h3>
+            <table>
+            <tr><th>User</th><th>Mailbox</th><th>Status</th></tr>
+            """
+            for r in data:
+                html += f"<tr><td>{r.get('UserUPN', '')}</td><td>{r.get('Mailbox', '')}</td><td>{r.get('Status', '')}</td></tr>"
+
+            html += """
+            </table>
+            </body>
+            </html>
+            """
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Send-As Delegation Results")
+            dlg.resize(600, 300)
+            layout = QVBoxLayout(dlg)
+
+            view = QTextEdit()
+            view.setReadOnly(True)
+            view.setHtml(html)
+            layout.addWidget(view)
+
+            btn_close = QPushButton("Close")
+            btn_close.clicked.connect(lambda: dlg.close())
+            layout.addWidget(btn_close)
+
+            dlg.exec()
+            return
+
+        # fallback — but should almost never trigger after this fix
+        QMessageBox.information(self, "Done", "Send-As delegation applied.\nSee log for details.")
+        self.accept()
 
 class AdvancedIdentitySearchDialog(QDialog):
     def __init__(self, parent, df, title="Advanced Search"):
@@ -4045,10 +4161,9 @@ class OffboardManager(QWidget):
         delegate_action.triggered.connect(self.open_grant_smb_full_dialog)
         menu.addAction(delegate_action)
 
-        # Future:
-        # sendas_action = QAction("Grant SMB Send As Delegation", self)
-        # sendas_action.triggered.connect(self.open_send_as_dialog)
-        # menu.addAction(sendas_action)
+        sendas_action = QAction("Grant SMB Send-As Delegation", self)
+        sendas_action.triggered.connect(self.open_grant_smb_sendas_dialog)
+        menu.addAction(sendas_action)
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
 
@@ -4063,9 +4178,22 @@ class OffboardManager(QWidget):
 
         menu = QMenu(self.devices_table)
 
+        # -------------------------
+        # INTUNE SECTION HEADER
+        # -------------------------
+        device_header = QAction("— Intune —", self)
+        device_header.setEnabled(False)
+        device_header.setSeparator(False)
+        device_header.setIconVisibleInMenu(False)
+        menu.addAction(device_header)
+
         laps_action = QAction("Retrieve LAPS Password(s)", self)
         laps_action.triggered.connect(self.open_retrieve_laps_dialog)
         menu.addAction(laps_action)
+
+        bitlocker_action = QAction("Retrieve Bitlocker Recovery Keys", self)
+        bitlocker_action.triggered.connect(self.open_retrieve_laps_dialog)
+        menu.addAction(bitlocker_action)
 
         menu.exec(self.devices_table.viewport().mapToGlobal(pos))
 
@@ -4474,6 +4602,48 @@ class OffboardManager(QWidget):
         dlg = GrantSMBFullDialog(
             parent=self,
             user_upns=user_upns,
+            csv_path=csv_path
+        )
+        dlg.exec()
+
+    def open_grant_smb_sendas_dialog(self):
+        selected_rows = self.identity_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # Identify UPN column
+        upn_col = None
+        for col in range(self.identity_table.columnCount()):
+            header = self.identity_table.horizontalHeaderItem(col).text().strip().lower()
+            if any(k in header for k in ["upn", "userprincipalname", "email"]):
+                upn_col = col
+                break
+
+        if upn_col is None:
+            QMessageBox.critical(self, "Error", "No UPN or Email column found.")
+            return
+
+        selected_upns = []
+        for idx in selected_rows:
+            item = self.identity_table.item(idx.row(), upn_col)
+            if item:
+                val = item.text().strip()
+                if val:
+                    selected_upns.append(val)
+
+        if not selected_upns:
+            QMessageBox.warning(self, "Invalid Selection", "No valid UPNs found.")
+            return
+
+        csv_path = self.exchange_csv_selector.currentText()
+        if not csv_path or not csv_path.endswith(".csv"):
+            QMessageBox.critical(self, "Error", "No valid Exchange CSV selected.")
+            return
+
+        dlg = GrantSMBSendAsDialog(
+            parent=self,
+            user_upns=selected_upns,
             csv_path=csv_path
         )
         dlg.exec()

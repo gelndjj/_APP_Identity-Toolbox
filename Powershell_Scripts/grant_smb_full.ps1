@@ -4,10 +4,6 @@ param(
     [string]$LogPath
 )
 
-Write-Output "DEBUG: Users = $Users"
-Write-Output "DEBUG: Mailboxes = $Mailboxes"
-Write-Output "DEBUG: LogPath = $LogPath"
-
 $MailboxList = $Mailboxes -split ","
 $UserList = $Users -split ","
 

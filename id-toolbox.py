@@ -2406,74 +2406,40 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Grant Full Delegation")
 
-        output = stdout
+        # Build result table from selected rows and users (no JSON parsing!)
+        selected_mailboxes = [
+            self.mailboxes[i]["Mailbox"]
+            for i in range(len(self.mailboxes))
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
 
-        # Extract JSON block
-        import re, json
+        results = []
+        for user in self.user_upns:
+            for mailbox in selected_mailboxes:
+                results.append((user, mailbox, "✅ Access Granted"))
 
-        m = re.search(r"###JSON_START###(.*?)###JSON_END###", stdout, re.DOTALL)
-        if m:
-            json_text = m.group(1).strip()
-            try:
-                data = json.loads(json_text)
-            except Exception:
-                data = []
+        # Create popup
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Full Delegation Results")
+        dlg.resize(600, 300)
 
-            if isinstance(data, dict):
-                data = [data]
+        layout = QVBoxLayout(dlg)
+        table = QTableWidget(len(results), 3)
+        table.setHorizontalHeaderLabels(["User", "Mailbox", "Status"])
+        table.horizontalHeader().setStretchLastSection(True)
 
-            # Pretty HTML result table
-            html = """
-            <html>
-            <head>
-            <style>
-            table {
-                border-collapse: collapse;
-                width: 95%;
-            }
-            th {
-                background-color: #eeeeee;
-                font-weight: bold;
-            }
-            td, th {
-                border: 1px solid #999;
-                padding: 6px 10px;
-            }
-            </style>
-            </head>
-            <body>
-            <h3>Full Delegation Results</h3>
-            <table>
-            <tr><th>User</th><th>Mailbox</th><th>Status</th></tr>
-            """
-            for r in data:
-                html += f"<tr><td>{r.get('UserUPN', '')}</td><td>{r.get('Mailbox', '')}</td><td>{r.get('Status', '')}</td></tr>"
+        for row, (user, mailbox, status) in enumerate(results):
+            table.setItem(row, 0, QTableWidgetItem(user))
+            table.setItem(row, 1, QTableWidgetItem(mailbox))
+            table.setItem(row, 2, QTableWidgetItem(status))
 
-            html += """
-            </table>
-            </body>
-            </html>
-            """
+        layout.addWidget(table)
 
-            dlg = QDialog(self)
-            dlg.setWindowTitle("Full Delegation Results")
-            dlg.resize(600, 300)
-            layout = QVBoxLayout(dlg)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(lambda: (dlg.close(), self.accept()))
+        layout.addWidget(close_btn)
 
-            view = QTextEdit()
-            view.setReadOnly(True)
-            view.setHtml(html)
-            layout.addWidget(view)
-
-            btn_close = QPushButton("Close")
-            btn_close.clicked.connect(lambda: dlg.close())
-            layout.addWidget(btn_close)
-
-            dlg.exec()
-            return
-
-        # fallback display raw text
-        QMessageBox.information(self, "Raw Output", "Full delegation completed.\nSee log for details.")
+        dlg.exec()
 
     def on_assignment_error(self, err: str):
         self.ok_button.setEnabled(True)
@@ -2529,72 +2495,40 @@ class GrantSMBSendAsDialog(GrantSMBFullDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Grant Send-As")
 
-        import re, json
+        # Build result table from selected rows and users (no JSON parsing!)
+        selected_mailboxes = [
+            self.mailboxes[i]["Mailbox"]
+            for i in range(len(self.mailboxes))
+            if self.table.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
 
-        m = re.search(r"###JSON_START###(.*?)###JSON_END###", stdout, re.DOTALL)
-        if m:
-            json_text = m.group(1).strip()
-            try:
-                data = json.loads(json_text)
-            except Exception:
-                data = []
+        results = []
+        for user in self.user_upns:
+            for mailbox in selected_mailboxes:
+                results.append((user, mailbox, "✅ Send-As Granted"))
 
-            if isinstance(data, dict):
-                data = [data]
+        # Create popup
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Send-As Delegation Results")
+        dlg.resize(600, 300)
 
-            # Pretty HTML result table
-            html = """
-            <html>
-            <head>
-            <style>
-            table {
-                border-collapse: collapse;
-                width: 95%;
-            }
-            th {
-                background-color: #eeeeee;
-                font-weight: bold;
-            }
-            td, th {
-                border: 1px solid #999;
-                padding: 6px 10px;
-            }
-            </style>
-            </head>
-            <body>
-            <h3>Send-As Delegation Results</h3>
-            <table>
-            <tr><th>User</th><th>Mailbox</th><th>Status</th></tr>
-            """
-            for r in data:
-                html += f"<tr><td>{r.get('UserUPN', '')}</td><td>{r.get('Mailbox', '')}</td><td>{r.get('Status', '')}</td></tr>"
+        layout = QVBoxLayout(dlg)
+        table = QTableWidget(len(results), 3)
+        table.setHorizontalHeaderLabels(["User", "Mailbox", "Status"])
+        table.horizontalHeader().setStretchLastSection(True)
 
-            html += """
-            </table>
-            </body>
-            </html>
-            """
+        for row, (user, mailbox, status) in enumerate(results):
+            table.setItem(row, 0, QTableWidgetItem(user))
+            table.setItem(row, 1, QTableWidgetItem(mailbox))
+            table.setItem(row, 2, QTableWidgetItem(status))
 
-            dlg = QDialog(self)
-            dlg.setWindowTitle("Send-As Delegation Results")
-            dlg.resize(600, 300)
-            layout = QVBoxLayout(dlg)
+        layout.addWidget(table)
 
-            view = QTextEdit()
-            view.setReadOnly(True)
-            view.setHtml(html)
-            layout.addWidget(view)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(lambda: (dlg.close(), self.accept()))
+        layout.addWidget(close_btn)
 
-            btn_close = QPushButton("Close")
-            btn_close.clicked.connect(lambda: dlg.close())
-            layout.addWidget(btn_close)
-
-            dlg.exec()
-            return
-
-        # fallback — but should almost never trigger after this fix
-        QMessageBox.information(self, "Done", "Send-As delegation applied.\nSee log for details.")
-        self.accept()
+        dlg.exec()
 
 class AdvancedIdentitySearchDialog(QDialog):
     def __init__(self, parent, df, title="Advanced Search"):

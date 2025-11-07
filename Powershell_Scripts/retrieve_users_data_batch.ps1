@@ -117,7 +117,14 @@ $CSVproperties = @(
     )
 
 #Requires -Version 7
-Connect-MgGraph
+Connect-MgGraph -Scopes `
+"User.Read.All", `
+"Directory.Read.All", `
+"Device.Read.All", `
+"AuditLog.Read.All", `
+"UserAuthenticationMethod.Read.All", `
+"EntitlementManagement.Read.All" `
+-ContextScope CurrentUser -NoWelcome
 
 # Start timing
 $startTime = Get-Date

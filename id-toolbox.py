@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer, QPoint
 from PyQt6.QtGui import (QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush,
                          QPainter, QPen, QImage, QPixmap
-)
+                         )
 from PyQt6 import QtGui, QtCore
 from faker import Faker
 
@@ -565,6 +565,7 @@ class DataSyncDialog(QDialog):
             except Exception:
                 pass
 
+
 # --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
@@ -596,6 +597,7 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -834,6 +836,7 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
+
 # --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -860,6 +863,7 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -1135,6 +1139,7 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -1173,6 +1178,7 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1403,6 +1409,7 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -1556,6 +1563,7 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Generate Temporary Access Pass Worker ---
 class GenerateTAPWorker(QThread):
     finished = pyqtSignal(str, str)
@@ -1580,6 +1588,7 @@ class GenerateTAPWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GenerateTAPDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -1745,6 +1754,7 @@ class GenerateTAPDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Generate TAP(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
+
 
 # --- Reset Password ---
 class GenerateResetPasswordDialog(QDialog):
@@ -1916,6 +1926,7 @@ class GenerateResetPasswordDialog(QDialog):
         self.ok_button.setText("Reset Password(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Revoke Session ---
 class RevokeSessionsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -2030,6 +2041,7 @@ class RevokeSessionsDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Revoke Sessions")
+
 
 # --- Get LAPS ---
 class RetrieveLAPSDialog(QDialog):
@@ -2210,6 +2222,7 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
+
 # --- Exchange PART ---
 class AssignExchangeWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -2233,6 +2246,7 @@ class AssignExchangeWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GrantSMBFullDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -2448,6 +2462,7 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 class GrantSMBSendAsDialog(GrantSMBFullDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
         super().__init__(parent, user_upns, csv_path)
@@ -2531,6 +2546,7 @@ class GrantSMBSendAsDialog(GrantSMBFullDialog):
         layout.addWidget(close_btn)
 
         dlg.exec()
+
 
 class AdvancedIdentitySearchDialog(QDialog):
     def __init__(self, parent, df, title="Advanced Search"):
@@ -2620,7 +2636,7 @@ class AdvancedIdentitySearchDialog(QDialog):
             elif op == "equals":
                 masks.append(series == val)
             elif op == "is empty":
-                masks.append(series == "" )
+                masks.append(series == "")
             elif op == "not empty":
                 masks.append(series != "")
 
@@ -2644,6 +2660,7 @@ class AdvancedIdentitySearchDialog(QDialog):
             except Exception as e:
                 print("Error clearing filter:", e)
         self.close()
+
 
 # --- BitLocker PART ---
 class BitlockerKeysDialog(QDialog):
@@ -2739,12 +2756,12 @@ class BitlockerKeysDialog(QDialog):
         # Populate table
         self.table.setRowCount(len(data))
         for r, item in enumerate(data):
-            self.table.setItem(r, 0, QTableWidgetItem(item.get("KeyId","")))
-            self.table.setItem(r, 1, QTableWidgetItem(item.get("DeviceId","")))
-            self.table.setItem(r, 2, QTableWidgetItem(item.get("DeviceName","")))
-            self.table.setItem(r, 3, QTableWidgetItem(item.get("CreatedDateTime","")))
-            self.table.setItem(r, 4, QTableWidgetItem(item.get("CreatedBy","")))
-            self.table.setItem(r, 5, QTableWidgetItem(item.get("RecoveryKey","")))
+            self.table.setItem(r, 0, QTableWidgetItem(item.get("KeyId", "")))
+            self.table.setItem(r, 1, QTableWidgetItem(item.get("DeviceId", "")))
+            self.table.setItem(r, 2, QTableWidgetItem(item.get("DeviceName", "")))
+            self.table.setItem(r, 3, QTableWidgetItem(item.get("CreatedDateTime", "")))
+            self.table.setItem(r, 4, QTableWidgetItem(item.get("CreatedBy", "")))
+            self.table.setItem(r, 5, QTableWidgetItem(item.get("RecoveryKey", "")))
 
         self.table.setColumnHidden(5, True)  # Hide recovery key by default
         self.console.append("✅ Keys loaded (hidden by default)")
@@ -2753,6 +2770,7 @@ class BitlockerKeysDialog(QDialog):
         self.refresh_btn.setEnabled(True)
         self.console.append(f"❌ PowerShell error: {err}")
         QMessageBox.critical(self, "PowerShell Error", err)
+
 
 # --- Modern Signature Pad ---
 class SignaturePad(QWidget):
@@ -2799,7 +2817,25 @@ class SignaturePad(QWidget):
     def save_png(self, filepath):
         self.image.save(filepath, "PNG")
 
-# --- Offboarding wizard ---
+    # ✅ NEW METHOD
+    def is_empty(self):
+        """Detect if pad is blank (pure white)."""
+        img = self.image.toImage()
+        width = img.width()
+        height = img.height()
+
+        # Sample vertical scanlines for efficiency
+        for y in (0, height // 4, height // 2, 3 * height // 4, height - 1):
+            for x in range(0, width, 5):  # sample every 5 pixels
+                if img.pixelColor(x, y) != QColor("white"):
+                    return False
+
+        return True
+
+
+# ---------------------------------------------------------------
+# ----------------------- Offboarding Wizard --------------------
+# ---------------------------------------------------------------
 class OffboardingWizard(QDialog):
     def __init__(self, users, parent=None):
         super().__init__(parent)
@@ -2807,38 +2843,44 @@ class OffboardingWizard(QDialog):
         self.parent_window = parent
 
         self.setWindowTitle("Offboard User(s) — Preview")
-        self.resize(1000, 800)
+        self.resize(1200, 800)
 
+        # --- STATE PER USER ---
+        self.user_state = {}  # upn -> dict
         self.current_user_upn = None
-        self.user_state = {}
 
-        # -------- ROOT LAYOUT (fixed buttons + scrollable content) --------
-        root_layout = QVBoxLayout(self)
+        # --- Common folders ---
+        base = os.path.dirname(os.path.abspath(__file__))
+        self.users_signatures_dir = os.path.join(base, "Users_Signatures")
+        self.admin_signatures_dir = os.path.join(base, "Admin_Signatures")
+        os.makedirs(self.users_signatures_dir, exist_ok=True)
+        os.makedirs(self.admin_signatures_dir, exist_ok=True)
 
+        # ================== MAIN LAYOUT + SCROLL ==================
+        root = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        root.addWidget(scroll)
 
-        content = QWidget()
-        main_layout = QVBoxLayout(content)  # your actual content goes here
+        container = QWidget()
+        self.main_layout = QVBoxLayout(container)
+        scroll.setWidget(container)
 
-        scroll.setWidget(content)
-        root_layout.addWidget(scroll)
-
-        # ---------- User selector ----------
+        # ================== USER SELECTOR ==================
         self.user_combo = QComboBox()
         for u in users:
             self.user_combo.addItem(f"{u['displayName']} ({u['upn']})", u)
         self.user_combo.currentIndexChanged.connect(self.load_user)
-        main_layout.addWidget(self.user_combo)
+        self.main_layout.addWidget(self.user_combo)
 
-        # ---------- User summary ----------
+        # ================== USER INFO ==================
         self.user_info_label = QLabel("")
         self.user_info_label.setStyleSheet("font-size:14px; padding:6px;")
-        main_layout.addWidget(self.user_info_label)
+        self.main_layout.addWidget(self.user_info_label)
 
-        # ---------- Devices table ----------
+        # ================== DEVICES TABLE ==================
         devices_group = QGroupBox("Devices assigned to this user")
-        devices_v = QVBoxLayout(devices_group)
+        v = QVBoxLayout(devices_group)
 
         self.dev_table = QTableWidget(0, 4)
         self.dev_table.setHorizontalHeaderLabels(["Device Name", "Serial", "Model", "OS"])
@@ -2848,7 +2890,6 @@ class OffboardingWizard(QDialog):
         except Exception:
             self.dev_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
-        from PyQt6.QtWidgets import QAbstractItemView
         try:
             self.dev_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.dev_table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
@@ -2856,163 +2897,205 @@ class OffboardingWizard(QDialog):
             self.dev_table.setSelectionBehavior(QTableWidget.SelectRows)
             self.dev_table.setSelectionMode(QTableWidget.MultiSelection)
 
-        devices_v.addWidget(self.dev_table)
-        main_layout.addWidget(devices_group)
+        v.addWidget(self.dev_table)
+        self.main_layout.addWidget(devices_group)
 
-        # ---------- Accessories checklist (scrollable) ----------
+        # ================== ACCESSORIES ==================
         acc_group = QGroupBox("Accessories Returned")
-        acc_group_layout = QVBoxLayout(acc_group)
+        acc_layout = QVBoxLayout(acc_group)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
+        acc_scroll = QScrollArea()
+        acc_scroll.setWidgetResizable(True)
+        w = QWidget()
+        self.acc_checks_layout = QVBoxLayout(w)
 
-        self.accessories = {}
-        default_items = [
-            "Laptop Charger",
-            "Headset",
-            "Mouse",
-            "Keyboard",
-            "iPhone Charger",
-            "Employee Badge",
-            "Docking Station",
-            "USB-C Cable",
-            "Backpack",
-            "SIM Card",
-            "Other (write below)",
+        self.accessories_list = [
+            "Laptop Charger", "Headset", "Mouse", "Keyboard",
+            "iPhone Charger", "Employee Badge", "Docking Station",
+            "USB-C Cable", "Backpack", "SIM Card", "Other (write below)",
         ]
 
-        for item in default_items:
+        self.accessories_widgets = {}
+        for item in self.accessories_list:
             chk = QCheckBox(item)
-            self.accessories[item] = chk
-            scroll_layout.addWidget(chk)
+            self.accessories_widgets[item] = chk
+            self.acc_checks_layout.addWidget(chk)
 
-        scroll.setMinimumHeight(140)
-        scroll.setMaximumHeight(140)  # 5 items visible max
-
-        scroll.setWidget(scroll_widget)
-        acc_group_layout.addWidget(scroll)
+        acc_scroll.setWidget(w)
+        acc_layout.addWidget(acc_scroll)
 
         self.other_text = QTextEdit()
         self.other_text.setPlaceholderText("Describe other returned items…")
         self.other_text.setFixedHeight(70)
-        acc_group_layout.addWidget(self.other_text)
+        acc_layout.addWidget(self.other_text)
 
-        main_layout.addWidget(acc_group)
+        self.main_layout.addWidget(acc_group)
 
-        # ------------------------------------------------------
-        # ------ COMPANY TEMPLATE + HORIZONTAL SIGNATURES ------
-        # ------------------------------------------------------
+        # ================== SIGNATURES (SIDE BY SIDE) ==================
+        sig_row = QHBoxLayout()
 
-        # Company template dropdown (top-right)
-        tmpl_layout = QHBoxLayout()
-        tmpl_layout.addStretch(1)
-
-        self.company_combo = QComboBox()
-        self.company_combo.addItem("Select company template…")
-        self.company_combo.addItems(["FLOA", "BNP", "METSYS", "MyFutureCompany"])
-        tmpl_layout.addWidget(self.company_combo)
-
-        main_layout.addLayout(tmpl_layout)
-
-        # ---------- HORIZONTAL SIGNATURE CONTAINER ----------
-        sig_container = QHBoxLayout()
-
-        # ======================================================
-        #                     USER SIGNATURE
-        # ======================================================
-        user_sig_group = QGroupBox("User Signature")
-        usig_layout = QVBoxLayout(user_sig_group)
+        # ---- USER SIGNATURE ----
+        user_group = QGroupBox("User Signature")
+        u_layout = QVBoxLayout(user_group)
 
         self.user_sig_pad = SignaturePad(width=540, height=180)
-        usig_layout.addWidget(self.user_sig_pad)
+        u_layout.addWidget(self.user_sig_pad)
 
-        usig_controls = QHBoxLayout()
+        u_controls = QHBoxLayout()
         self.user_sig_combo = QComboBox()
         self.user_sig_combo.addItem("Load existing signature…")
-        self.load_stored_signatures(self.user_sig_combo)
+        self.load_user_signatures(self.user_sig_combo)
         self.user_sig_combo.currentIndexChanged.connect(
-            lambda: self.load_signature_from_file(self.user_sig_combo, self.user_sig_pad)
+            lambda: self.load_signature_from_file(self.user_sig_combo, self.user_sig_pad, "Users_Signatures")
         )
-        usig_controls.addWidget(self.user_sig_combo)
+        u_controls.addWidget(self.user_sig_combo)
 
-        user_clear_btn = QPushButton("Clear")
-        user_clear_btn.clicked.connect(
-            lambda: self.clear_signature(self.user_sig_pad, self.user_sig_combo)
-        )
-        usig_controls.addWidget(user_clear_btn)
+        u_clear = QPushButton("Clear")
+        u_clear.clicked.connect(lambda: self.clear_signature(self.user_sig_pad, self.user_sig_combo))
+        u_controls.addWidget(u_clear)
 
-        usig_layout.addLayout(usig_controls)
-        sig_container.addWidget(user_sig_group)
+        u_layout.addLayout(u_controls)
+        sig_row.addWidget(user_group)
 
-        # ======================================================
-        #                    ADMIN SIGNATURE
-        # ======================================================
-        admin_sig_group = QGroupBox("Admin Signature")
-        asig_layout = QVBoxLayout(admin_sig_group)
+        # ---- ADMIN SIGNATURE ----
+        admin_group = QGroupBox("Admin Signature")
+        a_layout = QVBoxLayout(admin_group)
 
         self.admin_sig_pad = SignaturePad(width=540, height=180)
-        asig_layout.addWidget(self.admin_sig_pad)
+        a_layout.addWidget(self.admin_sig_pad)
 
-        asig_controls = QHBoxLayout()
+        a_controls = QHBoxLayout()
         self.admin_sig_combo = QComboBox()
         self.admin_sig_combo.addItem("Load existing signature…")
-        self.load_stored_signatures(self.admin_sig_combo)
+        self.load_admin_signatures()  # fills self.admin_sig_combo
         self.admin_sig_combo.currentIndexChanged.connect(
-            lambda: self.load_signature_from_file(self.admin_sig_combo, self.admin_sig_pad)
+            lambda: self.load_signature_from_file(self.admin_sig_combo, self.admin_sig_pad, "Admin_Signatures")
         )
-        asig_controls.addWidget(self.admin_sig_combo)
+        a_controls.addWidget(self.admin_sig_combo)
 
-        admin_clear_btn = QPushButton("Clear")
-        admin_clear_btn.clicked.connect(
-            lambda: self.clear_signature(self.admin_sig_pad, self.admin_sig_combo)
-        )
-        asig_controls.addWidget(admin_clear_btn)
+        a_clear = QPushButton("Clear")
+        a_clear.clicked.connect(lambda: self.clear_signature(self.admin_sig_pad, self.admin_sig_combo))
+        a_controls.addWidget(a_clear)
 
-        asig_layout.addLayout(asig_controls)
-        sig_container.addWidget(admin_sig_group)
+        a_layout.addLayout(a_controls)
+        sig_row.addWidget(admin_group)
 
-        # Add horizontal signature section to window
-        main_layout.addLayout(sig_container)
+        self.main_layout.addLayout(sig_row)
 
-        # ---------- Actions ----------
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
+        # ================== ACTION BUTTONS ==================
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
 
-        self.pdf_btn = QPushButton("Generate PDF")
-        self.pdf_btn.clicked.connect(self.generate_pdf)
-        btn_row.addWidget(self.pdf_btn)
+        gen_btn = QPushButton("Generate PDF")
+        gen_btn.clicked.connect(self.generate_pdf)
+        bottom.addWidget(gen_btn)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.close)
-        btn_row.addWidget(close_btn)
+        bottom.addWidget(close_btn)
 
-        root_layout.addLayout(btn_row)
+        root.addLayout(bottom)
 
+        # FIRST USER
         self.load_user(0)
 
-    # ------------------------------------------------------
-    # -------------------- Helper methods ------------------
-    # ------------------------------------------------------
+    # -------------------- LOADERS --------------------
+    def load_user_signatures(self, combo: QComboBox):
+        folder = self.users_signatures_dir
+        os.makedirs(folder, exist_ok=True)
+        # don't clear to avoid wiping placeholder that we already set
+        for p in sorted(os.listdir(folder)):
+            if p.lower().endswith(".png"):
+                combo.addItem(p)
 
+    def load_admin_signatures(self):
+        folder = self.admin_signatures_dir
+        os.makedirs(folder, exist_ok=True)
+        self.admin_sig_combo.clear()
+        self.admin_sig_combo.addItem("Load existing signature…")
+        for p in sorted(os.listdir(folder)):
+            if p.lower().endswith(".png"):
+                self.admin_sig_combo.addItem(p)
+
+    def load_signature_from_file(self, combo: QComboBox, pad: SignaturePad, folder_name: str):
+        if combo.currentIndex() == 0:
+            return
+        fn = combo.currentText()
+        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), folder_name)
+        path = os.path.join(folder, fn)
+        img = QImage(path)
+        if img.isNull():
+            return
+        pad.image = QPixmap.fromImage(
+            img.scaled(
+                pad.width(), pad.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+        )
+        pad._dirty = True
+        pad.update()
+
+    # -------------------- SAVE CURRENT USER STATE --------------------
+    def save_current_user_state(self, upn: str):
+        if not upn:
+            return
+        d = self.user_state.setdefault(upn, {})
+        # accessories
+        d["accessories"] = {name: chk.isChecked() for name, chk in self.accessories_widgets.items()}
+        d["other"] = self.other_text.toPlainText()
+        # devices (selected row indexes)
+        rows = [i.row() for i in self.dev_table.selectionModel().selectedRows()]
+        d["devices_rows"] = rows
+        # signatures (store copies)
+        d["user_sig"] = self.user_sig_pad.image.copy()
+        d["admin_sig"] = self.admin_sig_pad.image.copy()
+
+    # -------------------- LOAD USER STATE --------------------
+    def load_user_state(self, upn: str):
+        st = self.user_state.setdefault(upn, {
+            "accessories": {},
+            "other": "",
+            "devices_rows": [],
+            "user_sig": None,
+            "admin_sig": None
+        })
+        # accessories
+        for name, chk in self.accessories_widgets.items():
+            chk.setChecked(st["accessories"].get(name, False))
+        self.other_text.setPlainText(st.get("other", ""))
+
+        # signatures
+        if isinstance(st.get("user_sig"), QPixmap):
+            self.user_sig_pad.image = st["user_sig"].copy()
+            self.user_sig_pad._dirty = True
+        else:
+            self.user_sig_pad.clear()
+
+        if isinstance(st.get("admin_sig"), QPixmap):
+            self.admin_sig_pad.image = st["admin_sig"].copy()
+            self.admin_sig_pad._dirty = True
+        else:
+            self.admin_sig_pad.clear()
+
+        self.user_sig_pad.update()
+        self.admin_sig_pad.update()
+
+    # -------------------- LOAD USER --------------------
     def load_user(self, _index):
-        # --- STEP 1: SAVE state of the PREVIOUS user ---
-        if self.current_user_upn is not None:
+        if self.current_user_upn:
             self.save_current_user_state(self.current_user_upn)
 
-        # --- STEP 2: GET new user ---
         user = self.user_combo.currentData()
         if not user:
             return
-
-        upn = user.get("upn")
+        upn = user["upn"]
         self.current_user_upn = upn
 
-        # --- STEP 3: LOAD state for the NEW user ---
+        # load saved UI state first
         self.load_user_state(upn)
 
-        # --- STEP 4: Update user info in UI ---
+        # info
         self.user_info_label.setText(
             f"<b>Name:</b> {user.get('displayName', '')}<br>"
             f"<b>UPN:</b> {user.get('upn', '')}<br>"
@@ -3021,251 +3104,204 @@ class OffboardingWizard(QDialog):
             f"<b>Manager:</b> {user.get('manager', '')}"
         )
 
-        # --- STEP 5: Load their devices (OK as before) ---
+        # devices list for this user
         devices = []
         try:
-            devices = self.parent_window.devices_for_upn(upn)
+            devices = self.parent_window.devices_for_upn(upn) or []
         except Exception:
             pass
 
         self.dev_table.setRowCount(0)
-        for d in devices or []:
-            row = self.dev_table.rowCount()
-            self.dev_table.insertRow(row)
-            self.dev_table.setItem(row, 0, QTableWidgetItem(d.get("name", "")))
-            self.dev_table.setItem(row, 1, QTableWidgetItem(d.get("serial", "")))
-            self.dev_table.setItem(row, 2, QTableWidgetItem(d.get("model", "")))
-            self.dev_table.setItem(row, 3, QTableWidgetItem(d.get("os", "")))
+        for d in devices:
+            r = self.dev_table.rowCount()
+            self.dev_table.insertRow(r)
+            self.dev_table.setItem(r, 0, QTableWidgetItem(d.get("name", "")))
+            self.dev_table.setItem(r, 1, QTableWidgetItem(d.get("serial", "")))
+            self.dev_table.setItem(r, 2, QTableWidgetItem(d.get("model", "")))
+            self.dev_table.setItem(r, 3, QTableWidgetItem(d.get("os", "")))
 
-    def selected_devices(self):
-        rows = [idx.row() for idx in self.dev_table.selectionModel().selectedRows()]
-        out = []
-        for r in rows:
-            out.append({
-                "name": self.dev_table.item(r, 0).text() if self.dev_table.item(r, 0) else "",
-                "serial": self.dev_table.item(r, 1).text() if self.dev_table.item(r, 1) else "",
-                "model": self.dev_table.item(r, 2).text() if self.dev_table.item(r, 2) else "",
-                "os": self.dev_table.item(r, 3).text() if self.dev_table.item(r, 3) else "",
-            })
-        return out
+        # restore selected rows
+        saved = self.user_state[upn]["devices_rows"]
+        self.dev_table.clearSelection()
+        for r in saved:
+            if r < self.dev_table.rowCount():
+                self.dev_table.selectRow(r)
 
-    def accessories_summary(self):
-        checked = [k for k, chk in self.accessories.items() if chk.isChecked()]
-        other = self.other_text.toPlainText().strip()
-        if other:
-            checked.append(f"Other: {other}")
-        return ", ".join(checked) if checked else "None"
-
-    def save_current_user_state(self, upn):
-        if not upn:
-            return
-
-        state = {}
-        state["accessories"] = [k for k, chk in self.accessories.items() if chk.isChecked()]
-        state["other"] = self.other_text.toPlainText()
-        state["user_sig"] = self.user_sig_pad.image.copy()
-        state["admin_sig"] = self.admin_sig_pad.image.copy()
-
-        self.user_state[upn] = state
-
-    def load_user_state(self, upn):
-        state = self.user_state.get(upn)
-
-        if not state:
-            # fresh state
-            for chk in self.accessories.values():
-                chk.setChecked(False)
-            self.other_text.clear()
-            self.user_sig_pad.clear()
-            self.admin_sig_pad.clear()
-            return
-
-        for k, chk in self.accessories.items():
-            chk.setChecked(k in state["accessories"])
-
-        self.other_text.setPlainText(state["other"])
-
-        self.user_sig_pad.image = state["user_sig"].copy()
-        self.user_sig_pad.update()
-
-        self.admin_sig_pad.image = state["admin_sig"].copy()
-        self.admin_sig_pad.update()
-
-    # ---------------------------------------------------------
-    # --------- Signature loading from stored files ----------
-    # ---------------------------------------------------------
-
-    def clear_signature(self, pad, combo):
+    # -------------------- CLEAR SIGNATURE --------------------
+    def clear_signature(self, pad: SignaturePad, combo: QComboBox):
         pad.clear()
         combo.setCurrentIndex(0)
 
-    def load_stored_signatures(self, combo):
-        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Users_Signatures")
-        os.makedirs(folder, exist_ok=True)
-        pngs = sorted([f for f in os.listdir(folder) if f.lower().endswith(".png")])
-        for p in pngs:
-            combo.addItem(p)
-
-    def load_signature_from_file(self, combo, pad):
-        if combo.currentIndex() == 0:
-            return
-
-        filename = combo.currentText()
-        folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Users_Signatures")
-        path = os.path.join(folder, filename)
-
-        img = QImage(path)
-        if not img.isNull():
-            pix = QPixmap.fromImage(
-                img.scaled(
-                    pad.width(),
-                    pad.height(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-            )
-            pad.image = pix
-            pad.update()
-
-    # ---------------------------------------------------------
-    # ---------------------- PDF creation ---------------------
-    # ---------------------------------------------------------
-
+    # -------------------- PDF GENERATION (ALL USERS) --------------------
     def generate_pdf(self):
         import datetime
+        from PyQt6.QtGui import QPixmap
 
-        user = self.user_combo.currentData() or {}
-        chosen = self.selected_devices()
-        acc = self.accessories_summary()
+        # persist on-screen user state
+        if self.current_user_upn:
+            self.save_current_user_state(self.current_user_upn)
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.dirname(os.path.abspath(__file__))
+        dev_dir = os.path.join(base, "Devices_Returned")
+        acc_dir = os.path.join(base, "Accessories_Returned")
+        os.makedirs(dev_dir, exist_ok=True)
+        os.makedirs(acc_dir, exist_ok=True)
 
-        # Ensure folders exist
-        devices_folder = os.path.join(base_dir, "Devices_Returned")
-        accessories_folder = os.path.join(base_dir, "Accessories_Returned")
-        signatures_folder = os.path.join(base_dir, "Users_Signatures")
-
-        for f in [devices_folder, accessories_folder, signatures_folder]:
-            os.makedirs(f, exist_ok=True)
-
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        display_name = user.get("displayName", "User").replace(" ", "")
-
-        # PDF path selection
-        if chosen:
-            pdf_path = os.path.join(devices_folder, f"Offboarding_{display_name}_{timestamp}.pdf")
+        # --- Admin signature selection / capture once ---
+        admin_file_name = None
+        if self.admin_sig_combo.currentIndex() > 0:
+            admin_file_name = self.admin_sig_combo.currentText()
         else:
-            pdf_path = os.path.join(accessories_folder, f"Accessories_{display_name}_{timestamp}.pdf")
+            # no selection; if pad has ink, ask for a name and save
+            if not self.admin_sig_pad.is_empty():
+                name, ok = QInputDialog.getText(
+                    self, "Save Admin Signature", "Enter administrator name (file will end with _ADMIN.png):"
+                )
+                if not ok or not name.strip():
+                    QMessageBox.warning(self, "Missing Admin Signature",
+                                        "Admin signature is required to generate PDFs.")
+                    return
+                safe = name.strip().replace(" ", "_")
+                admin_file_name = f"{safe}_ADMIN.png"
+                admin_sig_path_once = os.path.join(self.admin_signatures_dir, admin_file_name)
+                self.admin_sig_pad.save_png(admin_sig_path_once)
+                # refresh and select it
+                self.load_admin_signatures()
+                self.admin_sig_combo.setCurrentText(admin_file_name)
+            else:
+                QMessageBox.warning(self, "Missing Admin Signature",
+                                    "Please select an admin signature or draw one.")
+                return
 
-        # Signature paths (USER + ADMIN)
-        user_sig_path = os.path.join(signatures_folder, f"{display_name}_USER.png")
-        admin_sig_path = os.path.join(signatures_folder, f"{display_name}_ADMIN.png")
+        made = 0
 
-        # Save both signatures
-        try:
-            self.user_sig_pad.save_png(user_sig_path)
-            self.admin_sig_pad.save_png(admin_sig_path)
-        except Exception as e:
-            QMessageBox.warning(self, "Signature Error", f"Could not save signature: {e}")
+        # -------- loop through every user and emit one PDF each --------
+        for u in self.users:
+            upn = u["upn"]
+            state = self.user_state.get(upn, {})
 
-        # Create PDF
-        try:
-            from reportlab.lib.pagesizes import A4
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.units import cm
+            acc_map = state.get("accessories", {}) or {}
+            other_txt = state.get("other", "") or ""
+            rows = state.get("devices_rows", []) or []
+            user_sig_pix = state.get("user_sig", None)
 
-            c = canvas.Canvas(pdf_path, pagesize=A4)
-            w, h = A4
+            # accessories -> string
+            acc_list = [k for k, v in acc_map.items() if v]
+            if other_txt.strip():
+                acc_list.append(f"Other: {other_txt.strip()}")
+            acc_str = ", ".join(acc_list) if acc_list else "None"
 
-            y = h - 2 * cm
-            c.setFont("Helvetica-Bold", 16)
+            # rebuild chosen devices for this upn
+            try:
+                all_devices = self.parent_window.devices_for_upn(upn) or []
+            except Exception:
+                all_devices = []
 
-            # Title
-            title = "Offboarding Receipt" if chosen else "Accessories Return Receipt"
-            c.drawString(2 * cm, y, title)
-            y -= 1.2 * cm
+            chosen = []
+            for r in rows:
+                if 0 <= r < len(all_devices):
+                    d = all_devices[r]
+                    chosen.append({
+                        "name": d.get("name", ""),
+                        "serial": d.get("serial", ""),
+                        "model": d.get("model", ""),
+                        "os": d.get("os", "")
+                    })
 
-            # User info
-            c.setFont("Helvetica", 11)
-            c.drawString(2 * cm, y, f"Name: {user.get('displayName', '')}")
-            y -= 0.7 * cm
-            c.drawString(2 * cm, y, f"UPN: {user.get('upn', '')}")
-            y -= 0.7 * cm
-            c.drawString(2 * cm, y, f"Department: {user.get('department', '')}")
-            y -= 0.7 * cm
-            c.drawString(2 * cm, y, f"Employee ID: {user.get('employeeId', '')}")
-            y -= 1.0 * cm
+            # target files
+            dn = (u.get("displayName", "User") or "User").replace(" ", "")
+            ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-            # Devices section
-            if chosen:
+            pdf_path = os.path.join(
+                dev_dir if chosen else acc_dir,
+                f"{'Offboarding' if chosen else 'Accessories'}_{dn}_{ts}.pdf"
+            )
+            user_sig_path = os.path.join(self.users_signatures_dir, f"{dn}_USER.png")
+            admin_sig_path = os.path.join(self.admin_signatures_dir, admin_file_name)
+
+            # ensure user signature file exists
+            try:
+                if isinstance(user_sig_pix, QPixmap):
+                    user_sig_pix.save(user_sig_path, "PNG")
+                elif upn == self.current_user_upn:  # fallback
+                    self.user_sig_pad.save_png(user_sig_path)
+            except Exception:
+                pass
+
+            # ---- build PDF ----
+            try:
+                from reportlab.lib.pagesizes import A4
+                from reportlab.pdfgen import canvas
+                from reportlab.lib.units import cm
+
+                c = canvas.Canvas(pdf_path, pagesize=A4)
+                w, h = A4
+
+                y = h - 2 * cm
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(2 * cm, y, "Offboarding Receipt" if chosen else "Accessories Return Receipt")
+                y -= 1.2 * cm
+
+                c.setFont("Helvetica", 11)
+                c.drawString(2 * cm, y, f"Name: {u.get('displayName', '')}")
+                y -= 0.7 * cm
+                c.drawString(2 * cm, y, f"UPN: {u.get('upn', '')}")
+                y -= 0.7 * cm
+                c.drawString(2 * cm, y, f"Department: {u.get('department', '')}")
+                y -= 0.7 * cm
+                c.drawString(2 * cm, y, f"Employee ID: {u.get('employeeId', '')}")
+                y -= 1.0 * cm
+
+                if chosen:
+                    c.setFont("Helvetica-Bold", 12)
+                    c.drawString(2 * cm, y, "Devices Returned:")
+                    y -= 0.7 * cm
+                    c.setFont("Helvetica", 10)
+                    for d in chosen:
+                        line = f"- {d['name']} | {d['serial']} | {d['model']} | {d['os']}"
+                        c.drawString(2.5 * cm, y, line[:95])
+                        y -= 0.6 * cm
+                    y -= 0.7 * cm
+
                 c.setFont("Helvetica-Bold", 12)
-                c.drawString(2 * cm, y, "Devices Returned:")
+                c.drawString(2 * cm, y, "Accessories Returned:")
                 y -= 0.7 * cm
                 c.setFont("Helvetica", 10)
-                for d in chosen:
-                    line = f"- {d['name']} | {d['serial']} | {d['model']} | {d['os']}"
-                    c.drawString(2.5 * cm, y, line[:95])
-                    y -= 0.6 * cm
-                y -= 0.7 * cm
+                for line in acc_str.split(", "):
+                    if line:
+                        c.drawString(2.5 * cm, y, line[:95])
+                        y -= 0.5 * cm
 
-            # Accessories section
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(2 * cm, y, "Accessories Returned:")
-            y -= 0.7 * cm
-            c.setFont("Helvetica", 10)
-            for line in acc.split(", "):
-                c.drawString(2.5 * cm, y, line[:95])
+                # signatures
+                y -= 1.5 * cm
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(2 * cm, y, "User Signature:")
+                c.drawString(12 * cm, y, "Admin Signature:")
                 y -= 0.5 * cm
 
-            # ----------------------------------------------
-            #          SIGNATURE AREA (2 columns)
-            # ----------------------------------------------
-            y -= 1.5 * cm
+                try:
+                    c.drawImage(user_sig_path, 2 * cm, y - 4 * cm,
+                                width=8 * cm, height=3.5 * cm,
+                                preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    c.drawString(2 * cm, y, "(User signature missing)")
 
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(2 * cm, y, "User Signature:")
-            c.drawString(12 * cm, y, "Admin Signature:")
-            y -= 0.5 * cm
+                try:
+                    c.drawImage(admin_sig_path, 12 * cm, y - 4 * cm,
+                                width=8 * cm, height=3.5 * cm,
+                                preserveAspectRatio=True, mask='auto')
+                except Exception:
+                    c.drawString(12 * cm, y, "(Admin signature missing)")
 
-            # USER signature block
-            try:
-                c.drawImage(
-                    user_sig_path,
-                    2 * cm,
-                    y - 4 * cm,
-                    width=8 * cm,
-                    height=3.5 * cm,
-                    preserveAspectRatio=True,
-                    mask='auto'
-                )
-            except Exception:
-                c.drawString(2 * cm, y, "(User signature missing)")
+                c.save()
+                made += 1
+            except ImportError:
+                QMessageBox.warning(self, "Missing library", "ReportLab must be installed:\n\npip install reportlab")
+            except Exception as e:
+                print(f"PDF error for {upn}: {e}")
 
-            # ADMIN signature block
-            try:
-                c.drawImage(
-                    admin_sig_path,
-                    12 * cm,
-                    y - 4 * cm,
-                    width=8 * cm,
-                    height=3.5 * cm,
-                    preserveAspectRatio=True,
-                    mask='auto'
-                )
-            except Exception:
-                c.drawString(12 * cm, y, "(Admin signature missing)")
+        QMessageBox.information(self, "PDFs Generated", f"{made} PDF(s) generated for {len(self.users)} user(s).")
 
-            # Save PDF
-            c.save()
-
-            QMessageBox.information(self, "PDF Saved", f"PDF saved here:\n{pdf_path}")
-
-        except ImportError:
-            QMessageBox.warning(
-                self,
-                "Missing library",
-                "ReportLab must be installed:\n\npip install reportlab"
-            )
 
 # --- Application ---#
 class OffboardManager(QWidget):
@@ -5331,6 +5367,7 @@ class OffboardManager(QWidget):
             "Devices_Returned",
             "Accessories_Returned",
             "Users_Signatures",
+            "Admin_Signatures",
             "Powershell_Logs",
             "JSONs",
             "Random_Users",
@@ -8442,6 +8479,7 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

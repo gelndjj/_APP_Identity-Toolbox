@@ -837,6 +837,426 @@ class GroupsComparisonDialog(QDialog):
         self.table.resizeRowsToContents()
 
 
+# --- Groups Management---#
+class GroupManagementDialog(QDialog):
+    """
+    Assign THEN (after 3s) Remove the same selected user(s) to/from chosen groups.
+    Right pane has two panels: Assign and Remove.
+    """
+
+    def __init__(self, parent=None, user_upns=None, csv_path=None):
+        super().__init__(parent)
+        self.user_upns = user_upns or []
+        self.groups_csv_path = csv_path
+        self.setWindowTitle("Group(s) Management — Assign then Remove")
+        self.setMinimumWidth(1000)
+        self.setMinimumHeight(560)
+
+        self.assign_groups = []  # [{'DisplayName', 'ObjectId'}]
+        self.remove_groups = []  # same shape
+
+        self._all_groups = []  # source list from CSV
+        self._results_assign = []  # parsed json objects
+        self._results_remove = []  # parsed json objects
+
+        self.assign_toggle_state = {"checked": False}
+        self.remove_toggle_state = {"checked": False}
+
+        # ---------- Layout ----------
+        main = QVBoxLayout(self)
+
+        # Top: Users list
+        users_lbl = QLabel("Selected User(s)")
+        users_lbl.setStyleSheet("font-weight:600;")
+        main.addWidget(users_lbl)
+
+        self.user_list = QListWidget()
+        self.user_list.addItems(self.user_upns)
+        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.user_list.setMinimumHeight(120)
+        self.user_list.setMaximumHeight(120)
+        main.addWidget(self.user_list)
+
+        # Middle: two group panels side-by-side
+        twin = QHBoxLayout()
+
+        # Left panel: Assign
+        left_panel = QVBoxLayout()
+        left_panel.addWidget(QLabel("Assign to these groups"))
+
+        self.search_assign = QLineEdit()
+        self.search_assign.setPlaceholderText("Search groups to ASSIGN…")
+        self.search_assign.textChanged.connect(self._filter_assign)
+        left_panel.addWidget(self.search_assign)
+
+        # ✅ Select All / Clear button for ASSIGN column
+        self.assign_toggle_btn = QPushButton("Select All")
+        self.assign_toggle_btn.setFixedWidth(100)
+
+        def toggle_assign():
+            self.toggle_checkboxes(self.table_assign, self.assign_toggle_state)
+            self.assign_toggle_btn.setText(
+                "Clear" if self.assign_toggle_state["checked"] else "Select All"
+            )
+
+        self.assign_toggle_btn.clicked.connect(toggle_assign)
+        left_panel.addWidget(self.assign_toggle_btn)
+
+        # Assign table
+        self.table_assign = QTableWidget(0, 2)
+        self.table_assign.setHorizontalHeaderLabels(["Assign", "Group Name"])
+        self.table_assign.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table_assign.setColumnWidth(0, 80)
+        self.table_assign.setMinimumHeight(330)
+        self.table_assign.setMaximumHeight(330)
+        left_panel.addWidget(self.table_assign)
+
+        twin.addLayout(left_panel, 1)
+
+        # Right panel: Remove
+        right_panel = QVBoxLayout()
+        right_panel.addWidget(QLabel("Remove from these groups"))
+
+        self.search_remove = QLineEdit()
+        self.search_remove.setPlaceholderText("Search groups to REMOVE…")
+        self.search_remove.textChanged.connect(self._filter_remove)
+        right_panel.addWidget(self.search_remove)
+
+        # Select All / Clear button for REMOVE column
+        self.remove_toggle_btn = QPushButton("Select All")
+        self.remove_toggle_btn.setFixedWidth(100)
+
+        def toggle_remove():
+            self.toggle_checkboxes(self.table_remove, self.remove_toggle_state)
+            self.remove_toggle_btn.setText(
+                "Clear" if self.remove_toggle_state["checked"] else "Select All"
+            )
+
+        self.remove_toggle_btn.clicked.connect(toggle_remove)
+        right_panel.addWidget(self.remove_toggle_btn)
+
+        # Remove table
+        self.table_remove = QTableWidget(0, 2)
+        self.table_remove.setHorizontalHeaderLabels(["Remove", "Group Name"])
+        self.table_remove.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table_remove.setColumnWidth(0, 80)
+        self.table_remove.setMinimumHeight(330)
+        self.table_remove.setMaximumHeight(330)
+        right_panel.addWidget(self.table_remove)
+
+        twin.addLayout(right_panel, 1)
+        main.addLayout(twin)
+
+        # Bottom buttons
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.run_btn = QPushButton("Run — Assign then Remove")
+        self.run_btn.clicked.connect(self._start_sequence)
+        btns.addWidget(self.run_btn)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        main.addLayout(btns)
+
+        # Load CSV
+        self._load_groups_csv()
+
+    def toggle_checkboxes(self, table, state_holder):
+        """Toggle only visible checkboxes in a filtered table."""
+        new_state = not state_holder["checked"]
+        state_holder["checked"] = new_state
+
+        for row in range(table.rowCount()):
+            if table.isRowHidden(row):
+                continue
+
+            item = table.item(row, 0)
+            if item:
+                item.setCheckState(
+                    Qt.CheckState.Checked if new_state else Qt.CheckState.Unchecked
+                )
+
+    # ---------- Load groups CSV ----------
+    def _load_groups_csv(self):
+        import pandas as pd
+        try:
+            df = pd.read_csv(self.groups_csv_path, dtype=str).fillna("")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read Groups CSV:\n{e}")
+            self.close()
+            return
+
+        df.columns = [c.strip().lower() for c in df.columns]
+        id_col = next((c for c in df.columns if "object" in c and "id" in c), None)
+        name_col = next((c for c in df.columns if "display" in c and "name" in c), None)
+        if not id_col or not name_col:
+            QMessageBox.critical(self, "Invalid CSV", "Groups CSV missing Object ID or Display Name columns.")
+            self.close()
+            return
+
+        self._all_groups = [{"DisplayName": row[name_col], "ObjectId": row[id_col]} for _, row in df.iterrows()]
+        self._populate_tables(self._all_groups)
+
+    def _populate_tables(self, groups):
+        # Assign table
+        self.table_assign.setRowCount(len(groups))
+        for i, g in enumerate(groups):
+            chk = QTableWidgetItem()
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.table_assign.setItem(i, 0, chk)
+            self.table_assign.setItem(i, 1, QTableWidgetItem(g["DisplayName"]))
+
+        # Remove table
+        self.table_remove.setRowCount(len(groups))
+        for i, g in enumerate(groups):
+            chk = QTableWidgetItem()
+            chk.setCheckState(Qt.CheckState.Unchecked)
+            self.table_remove.setItem(i, 0, chk)
+            self.table_remove.setItem(i, 1, QTableWidgetItem(g["DisplayName"]))
+
+    # ---------- Filters ----------
+    def _filter_assign(self, text):
+        t = text.lower()
+        for r in range(self.table_assign.rowCount()):
+            name = self.table_assign.item(r, 1).text().lower()
+            self.table_assign.setRowHidden(r, t not in name)
+
+    def _filter_remove(self, text):
+        t = text.lower()
+        for r in range(self.table_remove.rowCount()):
+            name = self.table_remove.item(r, 1).text().lower()
+            self.table_remove.setRowHidden(r, t not in name)
+
+    # ---------- Sequence runners ----------
+    def _start_sequence(self):
+        # Gather selections
+        assign_names = [
+            self.table_assign.item(i, 1).text()
+            for i in range(self.table_assign.rowCount())
+            if self.table_assign.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+        remove_names = [
+            self.table_remove.item(i, 1).text()
+            for i in range(self.table_remove.rowCount())
+            if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        # ✅ If literally nothing selected
+        if not assign_names and not remove_names:
+            QMessageBox.warning(
+                self, "Nothing to do",
+                "Select at least one group to assign or remove."
+            )
+            return
+
+        # Map to IDs
+        name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
+
+        self.assign_ids = [name2id[n] for n in assign_names if n in name2id]
+        self.remove_ids = [name2id[n] for n in remove_names if n in name2id]
+
+        # Disable button
+        self.run_btn.setEnabled(False)
+
+        # ✅ Case 1 — Assign AND Remove
+        if self.assign_ids and self.remove_ids:
+            self.run_btn.setText("⏳ Assigning…")
+            self._run_ps(
+                script_name="assign_users_to_groups.ps1",
+                upns=self.user_upns,
+                group_ids=self.assign_ids,
+                on_done=lambda out, err: self._after_assign(out, err, do_remove=True)
+            )
+            return
+
+        # ✅ Case 2 — Assign only
+        if self.assign_ids and not self.remove_ids:
+            self.run_btn.setText("⏳ Assigning…")
+            self._run_ps(
+                script_name="assign_users_to_groups.ps1",
+                upns=self.user_upns,
+                group_ids=self.assign_ids,
+                on_done=lambda out, err: self._finish(out, err)
+            )
+            return
+
+        # ✅ Case 3 — Remove only
+        if self.remove_ids and not self.assign_ids:
+            self.run_btn.setText("⏳ Removing…")
+            self._run_ps(
+                script_name="remove_users_from_groups.ps1",
+                upns=self.user_upns,
+                group_ids=self.remove_ids,
+                on_done=lambda out, err: self._finish(out, err)
+            )
+            return
+
+    def _after_assign(self, stdout, stderr, do_remove=False):
+        # Store assignment results
+        self._results_assign = self._parse_json_tail(stdout) or []
+
+        if not do_remove:
+            # ✅ Pure assign-only case
+            self._finish(stdout, stderr)
+            return
+
+        # ✅ Assign THEN Remove case
+        self.run_btn.setText("⏳ Waiting 3s, then Removing…")
+        QTimer.singleShot(3000, self._start_remove_phase)
+
+    def _start_remove_phase(self):
+        # Reload selected remove IDs (in case table changed)
+        name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
+        remove_ids = [
+            name2id[self.table_remove.item(i, 1).text()]
+            for i in range(self.table_remove.rowCount())
+            if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
+               and self.table_remove.item(i, 1).text() in name2id
+        ]
+
+        self.remove_ids = remove_ids
+
+        # ✅ If NO remove groups → end now
+        if not remove_ids:
+            self._finish("", "")
+            return
+
+        self.run_btn.setText("⏳ Removing…")
+        self._run_ps(
+            script_name="remove_users_from_groups.ps1",
+            upns=self.user_upns,
+            group_ids=remove_ids,
+            on_done=self._after_remove
+        )
+
+    def _after_remove(self, stdout, stderr):
+        self._results_remove = self._parse_json_tail(stdout) or []
+        self._finish(stdout, stderr)
+
+    def _finish(self, stdout, stderr):
+        self.run_btn.setEnabled(True)
+        self.run_btn.setText("Run — Assign then Remove")
+
+        # Ensure results containers exist
+        if not hasattr(self, "_results_assign"):
+            self._results_assign = []
+        if not hasattr(self, "_results_remove"):
+            self._results_remove = []
+
+        self._show_results()
+
+    # ---------- PowerShell runner ----------
+    def _run_ps(self, script_name, upns, group_ids, on_done):
+        try:
+            script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", script_name)
+            command = [
+                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", script_path,
+                "-UserUPNs", ",".join(upns),
+                "-GroupIDs", ",".join(group_ids)
+            ]
+            self.worker = AssignGroupsWorker(command)  # reuse your worker
+            self.worker.finished.connect(lambda out, err: on_done(out, err))
+            self.worker.error.connect(self._on_error)
+            self.worker.start()
+        except Exception as e:
+            self._on_error(str(e))
+
+    # ---------- Helpers ----------
+    def _on_error(self, msg):
+        self.run_btn.setEnabled(True)
+        self.run_btn.setText("Run — Assign then Remove")
+        QMessageBox.critical(self, "PowerShell Error", msg)
+
+    def _parse_json_tail(self, text):
+        import re, json
+        if not text:
+            return []
+        m = re.search(r'($begin:math:display$.*$end:math:display$|\{.*\})\s*$', text, re.DOTALL)
+        if not m:
+            return []
+        try:
+            payload = json.loads(m.group(1))
+            return payload if isinstance(payload, list) else [payload]
+        except Exception:
+            return []
+
+    def _rows_html(self, rows, text_color):
+        def colorize(status):
+            st = (status or "").lower()
+            if "✅" in status or "success" in st or "added" in st or "removed" in st:
+                return "#00cc44"
+            if "❌" in status or "fail" in st or "error" in st:
+                return "#ff4c4c"
+            if "⚠" in status or "already" in st or "skipped" in st:
+                return "#ffcc00"
+            return text_color
+
+        html_rows = []
+        for r in rows:
+            phase = r.get("Phase", "Assign")  # our remove script sets Phase="Remove"
+            user = r.get("UserUPN", "N/A")
+            group = r.get("GroupName", "N/A")
+            st = r.get("Status", "")
+            html_rows.append(
+                f"<tr><td>{phase}</td><td>{user}</td><td>{group}</td><td style='color:{colorize(st)}'>{st}</td></tr>"
+            )
+        return "\n".join(html_rows)
+
+    def _show_results(self):
+        self.run_btn.setEnabled(True)
+        self.run_btn.setText("Run — Assign then Remove")
+
+        rows_all = []
+        rows_all.extend(self._results_assign or [])
+        rows_all.extend(self._results_remove or [])
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Group(s) Management — Results")
+        dlg.setMinimumSize(780, 460)
+
+        palette = self.palette()
+        is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
+        if is_dark:
+            bg = "#1e1e1e";
+            fg = "#f0f0f0";
+            head = "#333";
+            border = "#444"
+        else:
+            bg = "#fff";
+            fg = "#222";
+            head = "#f6f6f6";
+            border = "#e5e5e5"
+
+        rows_html = self._rows_html(rows_all, fg)
+        html = f"""
+        <html><head><style>
+          body {{ background:{bg}; color:{fg}; font-family:-apple-system, Helvetica, Arial; font-size:13px; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          th, td {{ padding: 6px 10px; border-bottom: 1px solid {border}; text-align: left; }}
+          th {{ background:{head}; }}
+        </style></head><body>
+          <h3>Assign → wait 3s → Remove</h3>
+          <table>
+            <tr><th>Phase</th><th>User</th><th>Group</th><th>Status</th></tr>
+            {rows_html}
+          </table>
+        </body></html>
+        """
+
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit();
+        view.setReadOnly(True);
+        view.setHtml(html)
+        lay.addWidget(view)
+        btn = QPushButton("Close");
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
+
+        self.close()
+
+
 # --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -3389,9 +3809,6 @@ class OffboardingWizard(QDialog):
 
 
 # --- Onboarding Wizard --- #
-# ---------------------------------------------------------------
-# ----------------------- Material Supply Wizard ----------------
-# ---------------------------------------------------------------
 class SupplyWizard(QDialog):
     def __init__(self, users, parent=None):
         super().__init__(parent)
@@ -3921,10 +4338,6 @@ class OffboardManager(QWidget):
                 }
             """)
             return btn
-
-        # Buttons
-        # self.connect_btn = styled_button("Connect to Entra")
-        # self.connect_btn.clicked.connect(self.confirm_connect_to_entra)
 
         # Buttons
         self.connect_btn = styled_button("Retrieve Tenant Data")
@@ -5278,6 +5691,11 @@ class OffboardManager(QWidget):
         menu.addAction(entra_header)
 
         # Existing Entra actions
+
+        grp_mgmt_action = QAction("Group(s) Management", self)
+        grp_mgmt_action.triggered.connect(self.open_group_management)
+        menu.addAction(grp_mgmt_action)
+
         assign_group_action = QAction("Assign Group(s)", self)
         assign_group_action.triggered.connect(self.confirm_assign_groups)
         menu.addAction(assign_group_action)
@@ -5580,6 +5998,43 @@ class OffboardManager(QWidget):
                 self.console_output.append(f.read())
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load log:\n{e}")
+
+    def open_group_management(self):
+        # 1) Pull selected rows (your existing helper)
+        selected_users = self.get_selected_identity_rows()
+        upns = [u["upn"] for u in selected_users if u.get("upn")]
+
+        if not upns:
+            QMessageBox.warning(self, "No Selection", "Please select at least one user.")
+            return
+
+        # 2) Locate the Groups CSV exactly like Assign Group(s)
+        groups_path = getattr(self, "current_groups_csv_path", None)
+
+        if not groups_path or not os.path.exists(groups_path):
+            groups_dir = os.path.join(os.path.dirname(__file__), "Database_Groups")
+            csv_files = [f for f in os.listdir(groups_dir) if f.lower().endswith(".csv")]
+
+            if not csv_files:
+                QMessageBox.critical(
+                    self, "Missing CSV",
+                    "No Groups CSV found in Database_Groups folder."
+                )
+                return
+
+            groups_path = os.path.join(
+                groups_dir,
+                max(csv_files, key=lambda f:
+                os.path.getmtime(os.path.join(groups_dir, f)))
+            )
+
+        # 3) Launch group management dialog
+        dlg = GroupManagementDialog(
+            parent=self,
+            user_upns=upns,
+            csv_path=groups_path
+        )
+        dlg.exec()
 
     def open_generate_tap_dialog(self):
         # Retrieve selected user UPNs from identity_table

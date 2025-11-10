@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QFileDialog, QScrollArea, QGraphicsDropShadowEffect, QInputDialog,
     QFormLayout, QDialog, QListView, QCheckBox, QListWidget
 )
-from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer, QPoint
+from PyQt6.QtCore import QThread, pyqtSignal, Qt, QDate, QTimer
 from PyQt6.QtGui import (QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush,
-                         QPainter, QPen, QImage, QPixmap
+                         QPainter, QPen, QImage, QPixmap, QFont
                          )
 from PyQt6 import QtGui, QtCore
 from faker import Faker
@@ -2817,7 +2817,6 @@ class SignaturePad(QWidget):
     def save_png(self, filepath):
         self.image.save(filepath, "PNG")
 
-    # ✅ NEW METHOD
     def is_empty(self):
         """Detect if pad is blank (pure white)."""
         img = self.image.toImage()
@@ -2832,10 +2831,54 @@ class SignaturePad(QWidget):
 
         return True
 
+    def set_text_signature(self, text, font_size=48):
+        """Render typed text as a signature into the pad."""
+        self.clear()
 
-# ---------------------------------------------------------------
-# ----------------------- Offboarding Wizard --------------------
-# ---------------------------------------------------------------
+        painter = QPainter(self.image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        font = QFont("Zapfino", font_size)  # elegant handwriting-like font on macOS
+        painter.setFont(font)
+        painter.setPen(QPen(Qt.GlobalColor.black))
+
+        # Compute centered placement
+        rect = self.image.rect()
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+        painter.end()
+        self._dirty = True
+        self.update()
+
+
+class TypedSignatureDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Typed Signature")
+
+        layout = QVBoxLayout(self)
+
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("Type your name…")
+        layout.addWidget(self.edit)
+
+        buttons = QHBoxLayout()
+        ok = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+
+        buttons.addWidget(ok)
+        buttons.addWidget(cancel)
+
+        layout.addLayout(buttons)
+
+    def get_text(self):
+        return self.edit.text().strip()
+
+
+# --- Offboarding Wizard --- #
 class OffboardingWizard(QDialog):
     def __init__(self, users, parent=None):
         super().__init__(parent)
@@ -2906,6 +2949,11 @@ class OffboardingWizard(QDialog):
 
         acc_scroll = QScrollArea()
         acc_scroll.setWidgetResizable(True)
+
+        # ✅ Restore height so 5 checkboxes are visible
+        acc_scroll.setMinimumHeight(140)
+        acc_scroll.setMaximumHeight(140)
+
         w = QWidget()
         self.acc_checks_layout = QVBoxLayout(w)
 
@@ -2950,6 +2998,10 @@ class OffboardingWizard(QDialog):
         )
         u_controls.addWidget(self.user_sig_combo)
 
+        u_type = QPushButton("Type Signature")
+        u_type.clicked.connect(lambda: self.create_typed_signature(self.user_sig_pad, self.user_sig_combo))
+        u_controls.addWidget(u_type)
+
         u_clear = QPushButton("Clear")
         u_clear.clicked.connect(lambda: self.clear_signature(self.user_sig_pad, self.user_sig_combo))
         u_controls.addWidget(u_clear)
@@ -2972,6 +3024,10 @@ class OffboardingWizard(QDialog):
             lambda: self.load_signature_from_file(self.admin_sig_combo, self.admin_sig_pad, "Admin_Signatures")
         )
         a_controls.addWidget(self.admin_sig_combo)
+
+        a_type = QPushButton("Type Signature")
+        a_type.clicked.connect(lambda: self.create_typed_signature(self.admin_sig_pad, self.admin_sig_combo))
+        a_controls.addWidget(a_type)
 
         a_clear = QPushButton("Clear")
         a_clear.clicked.connect(lambda: self.clear_signature(self.admin_sig_pad, self.admin_sig_combo))
@@ -3127,10 +3183,18 @@ class OffboardingWizard(QDialog):
             if r < self.dev_table.rowCount():
                 self.dev_table.selectRow(r)
 
-    # -------------------- CLEAR SIGNATURE --------------------
+    # -------------------- CLEAR AND CREATE SIGNATURE --------------------
     def clear_signature(self, pad: SignaturePad, combo: QComboBox):
         pad.clear()
         combo.setCurrentIndex(0)
+
+    def create_typed_signature(self, pad: SignaturePad, combo: QComboBox):
+        dlg = TypedSignatureDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            text = dlg.get_text()
+            if text:
+                pad.set_text_signature(text)
+                combo.setCurrentIndex(0)  # reset “load existing file”
 
     # -------------------- PDF GENERATION (ALL USERS) --------------------
     def generate_pdf(self):
@@ -8485,4 +8549,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = OffboardManager()
     window.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec())x

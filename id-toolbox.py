@@ -2925,22 +2925,37 @@ class OffboardingWizard(QDialog):
         devices_group = QGroupBox("Devices assigned to this user")
         v = QVBoxLayout(devices_group)
 
+        # --- Scroll wrapper like Accessories ---
+        dev_scroll = QScrollArea()
+        dev_scroll.setWidgetResizable(True)
+        dev_scroll.setMinimumHeight(140)
+        dev_scroll.setMaximumHeight(140)
+
+        # Container for table
+        table_container = QWidget()
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+
         self.dev_table = QTableWidget(0, 4)
         self.dev_table.setHorizontalHeaderLabels(["Device Name", "Serial", "Model", "OS"])
 
         try:
             self.dev_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        except Exception:
+        except:
             self.dev_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         try:
             self.dev_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.dev_table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        except Exception:
+        except:
             self.dev_table.setSelectionBehavior(QTableWidget.SelectRows)
             self.dev_table.setSelectionMode(QTableWidget.MultiSelection)
 
-        v.addWidget(self.dev_table)
+        # add table inside container
+        table_layout.addWidget(self.dev_table)
+        dev_scroll.setWidget(table_container)
+
+        v.addWidget(dev_scroll)
         self.main_layout.addWidget(devices_group)
 
         # ================== ACCESSORIES ==================
@@ -2950,7 +2965,7 @@ class OffboardingWizard(QDialog):
         acc_scroll = QScrollArea()
         acc_scroll.setWidgetResizable(True)
 
-        # ✅ Restore height so 5 checkboxes are visible
+        # Restore height so 5 checkboxes are visible
         acc_scroll.setMinimumHeight(140)
         acc_scroll.setMaximumHeight(140)
 
@@ -3364,7 +3379,492 @@ class OffboardingWizard(QDialog):
             except Exception as e:
                 print(f"PDF error for {upn}: {e}")
 
-        QMessageBox.information(self, "PDFs Generated", f"{made} PDF(s) generated for {len(self.users)} user(s).")
+        QMessageBox.information(
+            self,
+            "PDFs Generated",
+            f"{made} PDF(s) generated for {len(self.users)} user(s).\nReturning to the main menu."
+        )
+
+        self.close()
+
+
+# --- Onboarding Wizard --- #
+# ---------------------------------------------------------------
+# ----------------------- Material Supply Wizard ----------------
+# ---------------------------------------------------------------
+class SupplyWizard(QDialog):
+    def __init__(self, users, parent=None):
+        super().__init__(parent)
+        self.users = users
+        self.parent_window = parent
+
+        self.setWindowTitle("Material(s) Supply — Preview")
+        self.resize(1200, 800)
+
+        # --- STATE PER USER ---
+        self.user_state = {}
+        self.current_user_upn = None
+
+        # --- Common folders ---
+        base = os.path.dirname(os.path.abspath(__file__))
+        self.users_signatures_dir = os.path.join(base, "Users_Signatures")
+        self.admin_signatures_dir = os.path.join(base, "Admin_Signatures")
+        self.supply_pdf_dir = os.path.join(base, "Supplied_Materials")
+
+        os.makedirs(self.users_signatures_dir, exist_ok=True)
+        os.makedirs(self.admin_signatures_dir, exist_ok=True)
+        os.makedirs(self.supply_pdf_dir, exist_ok=True)
+
+        # ================== MAIN LAYOUT + SCROLL ==================
+        root = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        root.addWidget(scroll)
+
+        container = QWidget()
+        self.main_layout = QVBoxLayout(container)
+        scroll.setWidget(container)
+
+        # ================== USER SELECTOR ==================
+        self.user_combo = QComboBox()
+        for u in users:
+            self.user_combo.addItem(f"{u['displayName']} ({u['upn']})", u)
+        self.user_combo.currentIndexChanged.connect(self.load_user)
+        self.main_layout.addWidget(self.user_combo)
+
+        # ================== USER INFO ==================
+        self.user_info_label = QLabel("")
+        self.user_info_label.setStyleSheet("font-size:14px; padding:6px;")
+        self.main_layout.addWidget(self.user_info_label)
+
+        # ================== DEVICES TABLE ==================
+        devices_group = QGroupBox("Devices Supplied to this User")
+        v = QVBoxLayout(devices_group)
+
+        # Wrap the table inside a scroll area (just like accessories)
+        dev_scroll = QScrollArea()
+        dev_scroll.setWidgetResizable(True)
+
+        # Fix visible height so more rows are visible
+        dev_scroll.setMinimumHeight(140)  # adjust: shows ~4 rows
+        dev_scroll.setMaximumHeight(140)
+
+        # The table itself
+        table_container = QWidget()
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.dev_table = QTableWidget(0, 4)
+        self.dev_table.setHorizontalHeaderLabels(["Device Name", "Serial", "Model", "OS"])
+
+        try:
+            self.dev_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        except:
+            self.dev_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        try:
+            self.dev_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            self.dev_table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        except:
+            self.dev_table.setSelectionBehavior(QTableWidget.SelectRows)
+            self.dev_table.setSelectionMode(QTableWidget.MultiSelection)
+
+        table_layout.addWidget(self.dev_table)
+        dev_scroll.setWidget(table_container)
+        v.addWidget(dev_scroll)
+
+        self.main_layout.addWidget(devices_group)
+
+        # ================== ACCESSORIES ==================
+        acc_group = QGroupBox("Accessories Supplied")
+        acc_layout = QVBoxLayout(acc_group)
+
+        acc_scroll = QScrollArea()
+        acc_scroll.setWidgetResizable(True)
+        acc_scroll.setMinimumHeight(140)
+        acc_scroll.setMaximumHeight(140)
+
+        w = QWidget()
+        self.acc_checks_layout = QVBoxLayout(w)
+
+        self.accessories_list = [
+            "Laptop Charger", "Headset", "Mouse", "Keyboard",
+            "iPhone Charger", "Employee Badge", "Docking Station",
+            "USB-C Cable", "Backpack", "SIM Card", "Other (write below)",
+        ]
+
+        self.accessories_widgets = {}
+        for item in self.accessories_list:
+            chk = QCheckBox(item)
+            self.accessories_widgets[item] = chk
+            self.acc_checks_layout.addWidget(chk)
+
+        acc_scroll.setWidget(w)
+        acc_layout.addWidget(acc_scroll)
+
+        self.other_text = QTextEdit()
+        self.other_text.setPlaceholderText("Describe other supplied items…")
+        self.other_text.setFixedHeight(70)
+        acc_layout.addWidget(self.other_text)
+
+        self.main_layout.addWidget(acc_group)
+
+        # ================== SIGNATURES (SIDE BY SIDE) ==================
+        sig_row = QHBoxLayout()
+
+        # ---- USER SIGNATURE ----
+        user_group = QGroupBox("User Signature")
+        u_layout = QVBoxLayout(user_group)
+
+        self.user_sig_pad = SignaturePad(width=540, height=180)
+        u_layout.addWidget(self.user_sig_pad)
+
+        u_controls = QHBoxLayout()
+        self.user_sig_combo = QComboBox()
+        self.user_sig_combo.addItem("Load existing signature…")
+        self.load_user_signatures(self.user_sig_combo)
+        self.user_sig_combo.currentIndexChanged.connect(
+            lambda: self.load_signature_from_file(self.user_sig_combo, self.user_sig_pad, "Users_Signatures")
+        )
+        u_controls.addWidget(self.user_sig_combo)
+
+        u_type = QPushButton("Type Signature")
+        u_type.clicked.connect(lambda: self.create_typed_signature(self.user_sig_pad, self.user_sig_combo))
+        u_controls.addWidget(u_type)
+
+        u_clear = QPushButton("Clear")
+        u_clear.clicked.connect(lambda: self.clear_signature(self.user_sig_pad, self.user_sig_combo))
+        u_controls.addWidget(u_clear)
+
+        u_layout.addLayout(u_controls)
+        sig_row.addWidget(user_group)
+
+        # ---- ADMIN SIGNATURE ----
+        admin_group = QGroupBox("Admin Signature")
+        a_layout = QVBoxLayout(admin_group)
+
+        self.admin_sig_pad = SignaturePad(width=540, height=180)
+        a_layout.addWidget(self.admin_sig_pad)
+
+        a_controls = QHBoxLayout()
+        self.admin_sig_combo = QComboBox()
+        self.admin_sig_combo.addItem("Load existing signature…")
+        self.load_admin_signatures()
+        self.admin_sig_combo.currentIndexChanged.connect(
+            lambda: self.load_signature_from_file(self.admin_sig_combo, self.admin_sig_pad, "Admin_Signatures")
+        )
+        a_controls.addWidget(self.admin_sig_combo)
+
+        a_type = QPushButton("Type Signature")
+        a_type.clicked.connect(lambda: self.create_typed_signature(self.admin_sig_pad, self.admin_sig_combo))
+        a_controls.addWidget(a_type)
+
+        a_clear = QPushButton("Clear")
+        a_clear.clicked.connect(lambda: self.clear_signature(self.admin_sig_pad, self.admin_sig_combo))
+        a_controls.addWidget(a_clear)
+
+        a_layout.addLayout(a_controls)
+        sig_row.addWidget(admin_group)
+
+        self.main_layout.addLayout(sig_row)
+
+        # ================== ACTIONS ==================
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+
+        gen_btn = QPushButton("Generate PDF")
+        gen_btn.clicked.connect(self.generate_pdf)
+        bottom.addWidget(gen_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        bottom.addWidget(close_btn)
+
+        root.addLayout(bottom)
+
+        self.load_user(0)
+
+    # -----------------------------------------------------------
+    # LOADING helpers (same as Offboarding)
+    # -----------------------------------------------------------
+    def load_user_signatures(self, combo):
+        folder = self.users_signatures_dir
+        os.makedirs(folder, exist_ok=True)
+        for p in sorted(os.listdir(folder)):
+            if p.lower().endswith(".png"):
+                combo.addItem(p)
+
+    def load_admin_signatures(self):
+        folder = self.admin_signatures_dir
+        os.makedirs(folder, exist_ok=True)
+        self.admin_sig_combo.clear()
+        self.admin_sig_combo.addItem("Load existing signature…")
+        for p in sorted(os.listdir(folder)):
+            if p.lower().endswith(".png"):
+                self.admin_sig_combo.addItem(p)
+
+    def load_signature_from_file(self, combo, pad, folder_name):
+        if combo.currentIndex() == 0:
+            return
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), folder_name, combo.currentText())
+        img = QImage(path)
+        if img.isNull():
+            return
+        pad.image = QPixmap.fromImage(
+            img.scaled(pad.width(), pad.height(),
+                       Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+        )
+        pad.update()
+
+    # -----------------------------------------------------------
+    # SAVE AND LOAD STATE (same as Offboarding)
+    # -----------------------------------------------------------
+    def save_current_user_state(self, upn):
+        d = self.user_state.setdefault(upn, {})
+        d["accessories"] = {k: chk.isChecked() for k, chk in self.accessories_widgets.items()}
+        d["other"] = self.other_text.toPlainText()
+        d["devices_rows"] = [i.row() for i in self.dev_table.selectionModel().selectedRows()]
+        d["user_sig"] = self.user_sig_pad.image.copy()
+        d["admin_sig"] = self.admin_sig_pad.image.copy()
+
+    def load_user_state(self, upn):
+        st = self.user_state.setdefault(upn, {
+            "accessories": {}, "other": "", "devices_rows": [],
+            "user_sig": None, "admin_sig": None
+        })
+
+        for name, chk in self.accessories_widgets.items():
+            chk.setChecked(st["accessories"].get(name, False))
+
+        self.other_text.setPlainText(st["other"])
+
+        if isinstance(st["user_sig"], QPixmap):
+            self.user_sig_pad.image = st["user_sig"].copy()
+        else:
+            self.user_sig_pad.clear()
+
+        if isinstance(st["admin_sig"], QPixmap):
+            self.admin_sig_pad.image = st["admin_sig"].copy()
+        else:
+            self.admin_sig_pad.clear()
+
+        self.user_sig_pad.update()
+        self.admin_sig_pad.update()
+
+    # -----------------------------------------------------------
+    # LOAD USER (same as Offboarding)
+    # -----------------------------------------------------------
+    def load_user(self, _index):
+        if self.current_user_upn:
+            self.save_current_user_state(self.current_user_upn)
+
+        user = self.user_combo.currentData()
+        if not user:
+            return
+        upn = user["upn"]
+        self.current_user_upn = upn
+
+        self.load_user_state(upn)
+
+        # header
+        self.user_info_label.setText(
+            f"<b>Name:</b> {user.get('displayName', '')}<br>"
+            f"<b>UPN:</b> {user.get('upn', '')}<br>"
+            f"<b>Dept:</b> {user.get('department', '')}<br>"
+            f"<b>Employee ID:</b> {user.get('employeeId', '')}<br>"
+            f"<b>Manager:</b> {user.get('manager', '')}"
+        )
+
+        # devices
+        try:
+            devices = self.parent_window.devices_for_upn(upn) or []
+        except:
+            devices = []
+
+        self.dev_table.setRowCount(0)
+        for d in devices:
+            r = self.dev_table.rowCount()
+            self.dev_table.insertRow(r)
+            self.dev_table.setItem(r, 0, QTableWidgetItem(d.get("name", "")))
+            self.dev_table.setItem(r, 1, QTableWidgetItem(d.get("serial", "")))
+            self.dev_table.setItem(r, 2, QTableWidgetItem(d.get("model", "")))
+            self.dev_table.setItem(r, 3, QTableWidgetItem(d.get("os", "")))
+
+        # restore saved rows
+        saved = self.user_state[upn]["devices_rows"]
+        self.dev_table.clearSelection()
+        for r in saved:
+            if r < self.dev_table.rowCount():
+                self.dev_table.selectRow(r)
+
+    # -----------------------------------------------------------
+    # SIGNATURE HELPERS
+    # -----------------------------------------------------------
+    def clear_signature(self, pad, combo):
+        pad.clear()
+        combo.setCurrentIndex(0)
+
+    def create_typed_signature(self, pad, combo):
+        dlg = TypedSignatureDialog(self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            text = dlg.get_text()
+            if text:
+                pad.set_text_signature(text)
+                combo.setCurrentIndex(0)
+
+    # -----------------------------------------------------------
+    # PDF GENERATION
+    # -----------------------------------------------------------
+    def generate_pdf(self):
+        import datetime
+        from PyQt6.QtGui import QPixmap
+
+        if self.current_user_upn:
+            self.save_current_user_state(self.current_user_upn)
+
+        # ----- ensure admin signature exists -----
+        admin_file_name = None
+        if self.admin_sig_combo.currentIndex() > 0:
+            admin_file_name = self.admin_sig_combo.currentText()
+        else:
+            if not self.admin_sig_pad.is_empty():
+                name, ok = QInputDialog.getText(
+                    self, "Save Admin Signature",
+                    "Enter administrator name (file will end with _ADMIN.png):"
+                )
+                if not ok or not name.strip():
+                    QMessageBox.warning(self, "Missing Admin Signature",
+                                        "Admin signature is required.")
+                    return
+                safe = name.strip().replace(" ", "_")
+                admin_file_name = f"{safe}_ADMIN.png"
+                admin_path = os.path.join(self.admin_signatures_dir, admin_file_name)
+                self.admin_sig_pad.save_png(admin_path)
+                self.load_admin_signatures()
+                self.admin_sig_combo.setCurrentText(admin_file_name)
+            else:
+                QMessageBox.warning(self, "Missing Admin Signature",
+                                    "Please select or provide an admin signature.")
+                return
+
+        made = 0
+        for u in self.users:
+            upn = u["upn"]
+            st = self.user_state.get(upn, {})
+
+            acc_map = st.get("accessories", {})
+            other = st.get("other", "")
+            rows = st.get("devices_rows", [])
+            user_sig = st.get("user_sig")
+
+            acc_list = [k for k, v in acc_map.items() if v]
+            if other.strip():
+                acc_list.append(f"Other: {other.strip()}")
+            acc_str = ", ".join(acc_list) if acc_list else "None"
+
+            try:
+                devices_all = self.parent_window.devices_for_upn(upn) or []
+            except:
+                devices_all = []
+
+            chosen = []
+            for r in rows:
+                if r < len(devices_all):
+                    d = devices_all[r]
+                    chosen.append({
+                        "name": d.get("name", ""),
+                        "serial": d.get("serial", ""),
+                        "model": d.get("model", ""),
+                        "os": d.get("os", ""),
+                    })
+
+            dn = u.get("displayName", "User").replace(" ", "")
+            ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+            pdf_path = os.path.join(self.supply_pdf_dir, f"Supply_{dn}_{ts}.pdf")
+            user_sig_path = os.path.join(self.users_signatures_dir, f"{dn}_USER.png")
+            admin_sig_path = os.path.join(self.admin_signatures_dir, admin_file_name)
+
+            # Save user signature
+            if isinstance(user_sig, QPixmap):
+                user_sig.save(user_sig_path, "PNG")
+            elif upn == self.current_user_upn:
+                self.user_sig_pad.save_png(user_sig_path)
+
+            # -------- Build PDF --------
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.units import cm
+            from reportlab.pdfgen import canvas
+
+            c = canvas.Canvas(pdf_path, pagesize=A4)
+            w, h = A4
+
+            y = h - 2 * cm
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(2 * cm, y, "Material Supply Receipt")
+            y -= 1.2 * cm
+
+            c.setFont("Helvetica", 11)
+            c.drawString(2 * cm, y, f"Name: {u.get('displayName', '')}")
+            y -= 0.7 * cm
+            c.drawString(2 * cm, y, f"UPN: {u.get('upn', '')}")
+            y -= 0.7 * cm
+            c.drawString(2 * cm, y, f"Department: {u.get('department', '')}")
+            y -= 0.7 * cm
+            c.drawString(2 * cm, y, f"Employee ID: {u.get('employeeId', '')}")
+            y -= 1.0 * cm
+
+            if chosen:
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(2 * cm, y, "Devices Supplied:")
+                y -= 0.7 * cm
+                c.setFont("Helvetica", 10)
+                for d in chosen:
+                    c.drawString(2.5 * cm, y,
+                                 f"- {d['name']} | {d['serial']} | {d['model']} | {d['os']}")
+                    y -= 0.5 * cm
+                y -= 0.7 * cm
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(2 * cm, y, "Accessories Supplied:")
+            y -= 0.7 * cm
+
+            c.setFont("Helvetica", 10)
+            for item in acc_str.split(", "):
+                c.drawString(2.5 * cm, y, item)
+                y -= 0.5 * cm
+
+            y -= 1.5 * cm
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(2 * cm, y, "User Signature:")
+            c.drawString(12 * cm, y, "Admin Signature:")
+            y -= 0.5 * cm
+
+            try:
+                c.drawImage(user_sig_path, 2 * cm, y - 4 * cm,
+                            width=8 * cm, height=3.5 * cm,
+                            preserveAspectRatio=True, mask='auto')
+            except:
+                c.drawString(2 * cm, y, "(User signature missing)")
+
+            try:
+                c.drawImage(admin_sig_path, 12 * cm, y - 4 * cm,
+                            width=8 * cm, height=3.5 * cm,
+                            preserveAspectRatio=True, mask='auto')
+            except:
+                c.drawString(12 * cm, y, "(Admin signature missing)")
+
+            c.save()
+            made += 1
+
+        QMessageBox.information(
+            self,
+            "PDFs Generated",
+            f"{made} PDF(s) generated for {len(self.users)} user(s).\nReturning to the main menu."
+        )
+
+        self.close()
 
 
 # --- Application ---#
@@ -4838,7 +5338,7 @@ class OffboardManager(QWidget):
         menu.addAction(return_action)
 
         supply_action = QAction("Material(s) Supply", self)
-        supply_action.triggered.connect(self.launch_offboarding_wizard)
+        supply_action.triggered.connect(self.launch_supply_wizard)
         menu.addAction(supply_action)
 
         menu.exec(self.identity_table.viewport().mapToGlobal(pos))
@@ -5355,11 +5855,20 @@ class OffboardManager(QWidget):
         dlg = OffboardingWizard(selected, self)
         dlg.exec()
 
+    def launch_supply_wizard(self):
+        # however you collect selected users in your table (same as offboarding)
+        selected_users = self.get_selected_identity_rows()  # <- your existing helper
+        if not selected_users:
+            QMessageBox.information(self, "No users", "Please select at least one user.")
+            return
+        dlg = SupplyWizard(selected_users, self)
+        dlg.exec()
+
     def get_selected_identity_rows(self):
         tbl = self.identity_table
         sels = tbl.selectionModel().selectedRows()
 
-        # ✅ Build header index map
+        # Build header index map
         headers = [tbl.horizontalHeaderItem(i).text() for i in range(tbl.columnCount())]
 
         def idx(col):
@@ -5430,6 +5939,7 @@ class OffboardManager(QWidget):
             "Database_Exchange",
             "Devices_Returned",
             "Accessories_Returned",
+            "Supplied_Materials",
             "Users_Signatures",
             "Admin_Signatures",
             "Powershell_Logs",
@@ -8549,4 +9059,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = OffboardManager()
     window.show()
-    sys.exit(app.exec())x
+    sys.exit(app.exec())

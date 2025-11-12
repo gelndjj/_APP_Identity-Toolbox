@@ -1041,7 +1041,7 @@ class GroupManagementDialog(QDialog):
             if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
         ]
 
-        # ✅ If literally nothing selected
+        # ✅ Nothing selected
         if not assign_names and not remove_names:
             QMessageBox.warning(
                 self, "Nothing to do",
@@ -1051,14 +1051,13 @@ class GroupManagementDialog(QDialog):
 
         # Map to IDs
         name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
-
         self.assign_ids = [name2id[n] for n in assign_names if n in name2id]
         self.remove_ids = [name2id[n] for n in remove_names if n in name2id]
 
         # Disable button
         self.run_btn.setEnabled(False)
 
-        # ✅ Case 1 — Assign AND Remove
+        # --- Case 1: Assign AND Remove ---
         if self.assign_ids and self.remove_ids:
             self.run_btn.setText("⏳ Assigning…")
             self._run_ps(
@@ -1069,43 +1068,60 @@ class GroupManagementDialog(QDialog):
             )
             return
 
-        # ✅ Case 2 — Assign only
+        # --- Case 2: Assign only ---
         if self.assign_ids and not self.remove_ids:
             self.run_btn.setText("⏳ Assigning…")
             self._run_ps(
                 script_name="assign_users_to_groups.ps1",
                 upns=self.user_upns,
                 group_ids=self.assign_ids,
-                on_done=lambda out, err: self._finish(out, err)
+                on_done=lambda out, err: self._after_assign(out, err, do_remove=False)
             )
             return
 
-        # ✅ Case 3 — Remove only
+        # --- Case 3: Remove only ---
         if self.remove_ids and not self.assign_ids:
             self.run_btn.setText("⏳ Removing…")
             self._run_ps(
                 script_name="remove_users_from_groups.ps1",
                 upns=self.user_upns,
                 group_ids=self.remove_ids,
-                on_done=lambda out, err: self._finish(out, err)
+                on_done=self._after_remove
             )
             return
 
     def _after_assign(self, stdout, stderr, do_remove=False):
-        # Store assignment results
-        self._results_assign = self._parse_json_tail(stdout) or []
+        parsed = self._parse_json_from_log(self.current_log_file)
+
+        # --- Handle multiple group assignments more clearly ---
+        if parsed and len(parsed) > 1:
+            self._results_assign = [{
+                "Phase": "Assign",
+                "UserUPN": ", ".join(self.user_upns),
+                "GroupName": f"{len(parsed)} groups",
+                "Status": "✅ All assigned successfully"
+            }]
+        elif parsed:
+            for r in parsed:
+                r["Phase"] = "Assign"
+            self._results_assign = parsed
+        else:
+            self._results_assign = [{
+                "Phase": "Assign",
+                "UserUPN": ", ".join(self.user_upns),
+                "GroupName": "None",
+                "Status": "No groups selected or no output returned"
+            }]
 
         if not do_remove:
-            # ✅ Pure assign-only case
             self._finish(stdout, stderr)
             return
 
-        # ✅ Assign THEN Remove case
+        # Assign THEN Remove mode
         self.run_btn.setText("⏳ Waiting 3s, then Removing…")
         QTimer.singleShot(3000, self._start_remove_phase)
 
     def _start_remove_phase(self):
-        # Reload selected remove IDs (in case table changed)
         name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
         remove_ids = [
             name2id[self.table_remove.item(i, 1).text()]
@@ -1113,10 +1129,9 @@ class GroupManagementDialog(QDialog):
             if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
                and self.table_remove.item(i, 1).text() in name2id
         ]
-
         self.remove_ids = remove_ids
 
-        # ✅ If NO remove groups → end now
+        # ✅ If NO remove groups → skip
         if not remove_ids:
             self._finish("", "")
             return
@@ -1130,37 +1145,107 @@ class GroupManagementDialog(QDialog):
         )
 
     def _after_remove(self, stdout, stderr):
-        self._results_remove = self._parse_json_tail(stdout) or []
+        parsed = self._parse_json_from_log(self.current_log_file)
+
+        # --- Handle multiple group removals more clearly ---
+        if parsed and len(parsed) > 1:
+            self._results_remove = [{
+                "Phase": "Remove",
+                "UserUPN": ", ".join(self.user_upns),
+                "GroupName": f"{len(parsed)} groups",
+                "Status": "✅ All removed successfully"
+            }]
+        elif parsed:
+            for r in parsed:
+                r["Phase"] = "Remove"
+            self._results_remove = parsed
+        else:
+            self._results_remove = [{
+                "Phase": "Remove",
+                "UserUPN": ", ".join(self.user_upns),
+                "GroupName": "None",
+                "Status": "No groups selected or no output returned"
+            }]
+
         self._finish(stdout, stderr)
 
     def _finish(self, stdout, stderr):
-        self.run_btn.setEnabled(True)
-        self.run_btn.setText("Run — Assign then Remove")
+        """Merge results and display."""
+        if not self._results_assign and not self._results_remove:
+            self._results_assign = [{
+                "Phase": "Assign",
+                "UserUPN": ", ".join(self.user_upns),
+                "GroupName": "None",
+                "Status": "No groups selected or no output returned"
+            }]
 
-        # Ensure results containers exist
-        if not hasattr(self, "_results_assign"):
-            self._results_assign = []
-        if not hasattr(self, "_results_remove"):
-            self._results_remove = []
+        if not self._results_remove and self._results_assign:
+            for r in self._results_assign:
+                r.setdefault("Phase", "Assign")
+        if not self._results_assign and self._results_remove:
+            for r in self._results_remove:
+                r.setdefault("Phase", "Remove")
 
         self._show_results()
 
     # ---------- PowerShell runner ----------
     def _run_ps(self, script_name, upns, group_ids, on_done):
-        try:
-            script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", script_name)
-            command = [
-                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", script_path,
-                "-UserUPNs", ",".join(upns),
-                "-GroupIDs", ",".join(group_ids)
-            ]
-            self.worker = AssignGroupsWorker(command)  # reuse your worker
-            self.worker.finished.connect(lambda out, err: on_done(out, err))
-            self.worker.error.connect(self._on_error)
-            self.worker.start()
-        except Exception as e:
-            self._on_error(str(e))
+        import os, datetime
+        from PyQt6.QtGui import QTextCursor
+
+        # --- Prepare script path ---
+        script_path = os.path.join(
+            os.path.dirname(__file__),
+            "Powershell_Scripts",
+            script_name
+        )
+
+        # --- Log file ---
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        logs_dir = getattr(self.parent(), "logs_dir", os.getcwd())
+        log_file = os.path.join(logs_dir, f"{timestamp}_{script_name}.log")
+
+        # --- Build arguments ---
+        args = [
+            "-UserUPNs", ",".join(upns),
+            "-GroupIDs", ",".join(group_ids)
+        ]
+
+        # --- Console feedback ---
+        if hasattr(self.parent(), "console"):
+            self.parent().console.clear()
+            self.parent().console.append(f"🚀 Running {script_name} for {len(upns)} user(s)...\n")
+
+        # --- Create and start worker ---
+        self.current_log_file = log_file
+        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+
+        # Live output
+        if hasattr(self.parent(), "console"):
+            self.worker.output.connect(lambda line: (
+                self.parent().console.append(line),
+                self.parent().console.moveCursor(QTextCursor.MoveOperation.End)
+            ))
+
+        # Error handling
+        self.worker.error.connect(self._on_error)
+
+        # On completion (no args expected)
+        self.worker.finished.connect(lambda: on_done("", ""))
+
+        # Optional log list refresh
+        if hasattr(self.parent(), "refresh_log_list"):
+            self.worker.finished.connect(self.parent().refresh_log_list)
+
+        self.worker.start()
+
+        # Show console + update button
+        if hasattr(self.parent(), "show_named_page"):
+            self.parent().show_named_page("console")
+
+        if hasattr(self, "run_btn"):
+            self.run_btn.setEnabled(False)
+            self.run_btn.setText("⏳ Running PowerShell...")
 
     # ---------- Helpers ----------
     def _on_error(self, msg):
@@ -1168,18 +1253,37 @@ class GroupManagementDialog(QDialog):
         self.run_btn.setText("Run — Assign then Remove")
         QMessageBox.critical(self, "PowerShell Error", msg)
 
-    def _parse_json_tail(self, text):
-        import re, json
-        if not text:
-            return []
-        m = re.search(r'($begin:math:display$.*$end:math:display$|\{.*\})\s*$', text, re.DOTALL)
-        if not m:
-            return []
+    def _parse_json_from_log(self, log_file):
+        """
+        Read the PowerShell log file and extract the last valid JSON object/array.
+        This replaces _parse_json_tail since PowerShellLoggerWorker no longer returns stdout.
+        """
+        import json, re, os
+
+        if not log_file or not os.path.exists(log_file):
+            return None
+
         try:
-            payload = json.loads(m.group(1))
-            return payload if isinstance(payload, list) else [payload]
+            with open(log_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # Find the last JSON block ({...} or [...]) in the log
+            match = re.search(r'(\{.*\}|\[.*\])\s*$', content, re.DOTALL)
+            if not match:
+                return None
+
+            json_text = match.group(1).strip()
+
+            # Try parsing JSON
+            data = json.loads(json_text)
+            if isinstance(data, dict):
+                return [data]
+            elif isinstance(data, list):
+                return data
+            else:
+                return None
         except Exception:
-            return []
+            return None
 
     def _rows_html(self, rows, text_color):
         def colorize(status):

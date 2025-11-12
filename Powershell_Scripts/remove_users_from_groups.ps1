@@ -35,6 +35,10 @@ $UserUPNs = $normalizedUsers | Select-Object -Unique
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+# Prevent Graph / Import-Module info from polluting stdout
+$InformationPreference = "SilentlyContinue"
+$WarningPreference = "SilentlyContinue"
+$VerbosePreference = "SilentlyContinue"
 $result = @()
 
 # --- Connect to Graph ---
@@ -132,5 +136,11 @@ if (-not $result) {
     })
 }
 
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$result | ConvertTo-Json -Depth 6 -Compress | Write-Output
+try {
+    # Force UTF-8 output and write pure JSON only
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    ($result | ConvertTo-Json -Depth 6) | Write-Host
+} catch {
+    Write-Error "JSON serialization failed: $($_.Exception.Message)"
+}
+exit 0

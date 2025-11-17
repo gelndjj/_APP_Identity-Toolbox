@@ -1,4 +1,4 @@
-# 🛠️ Identity Toolbox
+# 🛠️ Identity Toolbox - MacOS
 
 A modern **PyQt6 + PowerShell** desktop app for **Microsoft Entra ID** administration.  
 Built for IT admins automating **users, devices, apps, groups & access governance** with a clean UI.

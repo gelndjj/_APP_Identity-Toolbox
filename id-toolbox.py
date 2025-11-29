@@ -1,4 +1,4 @@
-import os, glob, subprocess, sys, datetime, pandas as pd, shutil, json, string, random, csv, time, tempfile, base64
+import os, glob, subprocess, sys, datetime, pandas as pd, json, string, random, csv, time, tempfile, base64
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTableWidget,
@@ -15,9 +15,6 @@ from PyQt6.QtGui import (QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush
 from PyQt6 import QtGui, QtCore
 from faker import Faker
 
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
-
-
 class ClickableCard(QFrame):
     clicked = pyqtSignal()
 
@@ -29,33 +26,39 @@ class ClickableCard(QFrame):
             self.clicked.emit()
         super().mousePressEvent(event)
 
-
 class PowerShellLoggerWorker(QThread):
     output = pyqtSignal(str)
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, script_path, args, log_file):
+    def __init__(self, pwsh_path, script_path, args, log_file):
         super().__init__()
+        self.pwsh_path = pwsh_path
         self.script_path = script_path
         self.args = args
         self.log_file = log_file
 
     def run(self):
         try:
+            # Correct PowerShell block including param()
+            ps_cmd = (
+                f"& {{ param($args); "
+                f"$ProgressPreference='SilentlyContinue'; "
+                f"& '{self.script_path}' @args }}"
+            )
+
             process = subprocess.Popen(
                 [
-                    "pwsh",
+                    self.pwsh_path,
                     "-ExecutionPolicy", "Bypass",
                     "-NoProfile",
-                    "-Command",
-                    f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' @args }}",
-                ] + self.args,
+                    "-Command", ps_cmd,
+                ] + self.args,  # passed directly to $args
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                env={**os.environ, "TERM": "dumb"}  # 👈 disable ANSI color codes
+                env={**os.environ, "TERM": "dumb"}
             )
 
             with open(self.log_file, "w", encoding="utf-8") as f:
@@ -67,19 +70,22 @@ class PowerShellLoggerWorker(QThread):
 
             process.wait()
             if process.returncode == 0:
-                self.finished.emit(f"Script {os.path.basename(self.script_path)} completed successfully.")
+                self.finished.emit(
+                    f"Script {os.path.basename(self.script_path)} completed successfully."
+                )
             else:
                 self.error.emit(f"Script exited with code {process.returncode}")
+
         except Exception as e:
             self.error.emit(str(e))
-
 
 class PowerShellWorkerWithParam(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, script_path, upn):
+    def __init__(self, pwsh_path, script_path, upn):
         super().__init__()
+        self.pwsh_path = pwsh_path
         self.script_path = script_path
         self.upn = upn
 
@@ -87,14 +93,14 @@ class PowerShellWorkerWithParam(QThread):
         try:
             subprocess.run(
                 [
-                    "pwsh",
+                    self.pwsh_path,
                     "-ExecutionPolicy", "Bypass",
                     "-NoProfile",
                     "-Command",
                     f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' -upn '{self.upn}' }}"
                 ],
                 check=True,
-                env={**os.environ, "TERM": "dumb"}  # prevent ANSI escape codes
+                env={**os.environ, "TERM": "dumb"}
             )
             self.finished.emit(f"User {self.upn} disabled successfully.")
         except subprocess.CalledProcessError as e:
@@ -102,38 +108,40 @@ class PowerShellWorkerWithParam(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-
 class PowerShellWorker(QThread):
-    finished = pyqtSignal(str, str)  # status, message
+    finished = pyqtSignal(str, str)
 
-    def __init__(self, command):
+    def __init__(self, pwsh_path, command):
         super().__init__()
-        self.command = command
+        self.pwsh_path = pwsh_path
+        self.command = command  # list of args (no pwsh.exe)
 
     def run(self):
         try:
-            result = subprocess.run(self.command, capture_output=True, text=True)
+            full_cmd = [self.pwsh_path] + self.command
+            result = subprocess.run(full_cmd, capture_output=True, text=True)
+
             if result.returncode == 0:
-                self.finished.emit("success", result.stdout.strip())
+                self.finished.emit("success", result.stdout)
             else:
-                err = result.stderr.strip() or result.stdout.strip()
-                self.finished.emit("error", err)
+                self.finished.emit("error", result.stderr or result.stdout)
         except Exception as e:
             self.finished.emit("error", str(e))
 
-
 class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)  # live log lines
-    finished = pyqtSignal(str, str)  # status, message
+    output = pyqtSignal(str)
+    finished = pyqtSignal(str, str)
 
-    def __init__(self, command):
+    def __init__(self, pwsh_path, command):
         super().__init__()
+        self.pwsh_path = pwsh_path
         self.command = command
 
     def run(self):
         try:
+            full_cmd = [self.pwsh_path] + self.command
             process = subprocess.Popen(
-                self.command,
+                full_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True
@@ -153,7 +161,6 @@ class StreamingPowerShellWorker(QThread):
 
         except Exception as e:
             self.finished.emit("error", str(e))
-
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -220,7 +227,6 @@ class CsvDropZone(QLabel):
                     if self.on_csv_dropped:
                         self.on_csv_dropped(file_path)
                     break
-
 
 class DataSyncDialog(QDialog):
     """
@@ -524,7 +530,13 @@ class DataSyncDialog(QDialog):
 
         # build worker
         from PyQt6 import QtGui  # for live scroll
-        self.worker = PowerShellLoggerWorker(t["script"], t["args"], log_file)
+        pwsh = self.parent().get_pwsh_path()
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            t["script"],
+            t["args"],
+            log_file
+        )
 
         if getattr(parent, "console_output", None):
             self.worker.output.connect(lambda line: (
@@ -565,7 +577,6 @@ class DataSyncDialog(QDialog):
             except Exception:
                 pass
 
-
 # --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
@@ -597,7 +608,6 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -836,7 +846,6 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
-
 # --- Groups Management---#
 class GroupManagementDialog(QDialog):
     """
@@ -889,7 +898,7 @@ class GroupManagementDialog(QDialog):
         self.search_assign.textChanged.connect(self._filter_assign)
         left_panel.addWidget(self.search_assign)
 
-        # ✅ Select All / Clear button for ASSIGN column
+        # Select All / Clear button for ASSIGN column
         self.assign_toggle_btn = QPushButton("Select All")
         self.assign_toggle_btn.setFixedWidth(100)
 
@@ -1041,7 +1050,7 @@ class GroupManagementDialog(QDialog):
             if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
         ]
 
-        # ✅ Nothing selected
+        # Nothing selected
         if not assign_names and not remove_names:
             QMessageBox.warning(
                 self, "Nothing to do",
@@ -1131,7 +1140,7 @@ class GroupManagementDialog(QDialog):
         ]
         self.remove_ids = remove_ids
 
-        # ✅ If NO remove groups → skip
+        # If NO remove groups → skip
         if not remove_ids:
             self._finish("", "")
             return
@@ -1218,7 +1227,14 @@ class GroupManagementDialog(QDialog):
 
         # --- Create and start worker ---
         self.current_log_file = log_file
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        pwsh = self.parent().get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         # Live output
         if hasattr(self.parent(), "console"):
@@ -1360,7 +1376,6 @@ class GroupManagementDialog(QDialog):
 
         self.close()
 
-
 # --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -1387,7 +1402,6 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -1663,7 +1677,6 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -1702,7 +1715,6 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
-
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1933,7 +1945,6 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -2087,7 +2098,6 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Generate Temporary Access Pass Worker ---
 class GenerateTAPWorker(QThread):
     finished = pyqtSignal(str, str)
@@ -2112,7 +2122,6 @@ class GenerateTAPWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GenerateTAPDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
@@ -2229,7 +2238,16 @@ class GenerateTAPDialog(QDialog):
             self.console.clear()
             self.console.append(f"🚀 Generating TAP(s) for {len(self.user_upns)} user(s)...\n")
 
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        # --- Create and start worker ---
+        self.current_log_file = log_file
+        pwsh = self.parent().get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         # Stream output live to console
         if self.console:
@@ -2278,7 +2296,6 @@ class GenerateTAPDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Generate TAP(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
-
 
 # --- Reset Password ---
 class GenerateResetPasswordDialog(QDialog):
@@ -2408,7 +2425,15 @@ class GenerateResetPasswordDialog(QDialog):
             self.console.append(f"🔐 Resetting password for {len(self.user_upns)} user(s)...\n")
 
         # --- Create and start worker ---
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        self.current_log_file = log_file
+        pwsh = self.parent().get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         if self.console:
             self.worker.output.connect(lambda line: (
@@ -2449,7 +2474,6 @@ class GenerateResetPasswordDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Reset Password(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
-
 
 # --- Revoke Session ---
 class RevokeSessionsDialog(QDialog):
@@ -2526,8 +2550,16 @@ class RevokeSessionsDialog(QDialog):
             self.console.clear()
             self.console.append(f"🚪 Revoking sessions for {len(self.user_upns)} user(s)...\n")
 
-        # Run PowerShell script
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        # --- Create and start worker ---
+        self.current_log_file = log_file
+        pwsh = self.parent().get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         if self.console:
             self.worker.output.connect(lambda line: (
@@ -2565,7 +2597,6 @@ class RevokeSessionsDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Revoke Sessions")
-
 
 # --- Get LAPS ---
 class RetrieveLAPSDialog(QDialog):
@@ -2658,8 +2689,16 @@ class RetrieveLAPSDialog(QDialog):
                 f"🔑 Retrieving LAPS password for {len(self.device_ids)} device(s)...\n"
             )
 
-        # Worker setup
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        # --- Create and start worker ---
+        self.current_log_file = log_file
+        pwsh = self.parent().get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         if self.console:
             self.worker.output.connect(lambda line: (
@@ -2746,7 +2785,6 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
-
 # --- Exchange PART ---
 class AssignExchangeWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -2770,7 +2808,6 @@ class AssignExchangeWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
-
 
 class GrantSMBFullDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -2986,7 +3023,6 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 class GrantSMBSendAsDialog(GrantSMBFullDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
         super().__init__(parent, user_upns, csv_path)
@@ -3070,7 +3106,6 @@ class GrantSMBSendAsDialog(GrantSMBFullDialog):
         layout.addWidget(close_btn)
 
         dlg.exec()
-
 
 class AdvancedIdentitySearchDialog(QDialog):
     def __init__(self, parent, df, title="Advanced Search"):
@@ -3185,7 +3220,6 @@ class AdvancedIdentitySearchDialog(QDialog):
                 print("Error clearing filter:", e)
         self.close()
 
-
 # --- BitLocker PART ---
 class BitlockerKeysDialog(QDialog):
     def __init__(self, device_names, parent=None):
@@ -3295,7 +3329,6 @@ class BitlockerKeysDialog(QDialog):
         self.console.append(f"❌ PowerShell error: {err}")
         QMessageBox.critical(self, "PowerShell Error", err)
 
-
 # --- Modern Signature Pad ---
 class SignaturePad(QWidget):
     def __init__(self, width=500, height=150):
@@ -3374,7 +3407,6 @@ class SignaturePad(QWidget):
         self._dirty = True
         self.update()
 
-
 class TypedSignatureDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3400,7 +3432,6 @@ class TypedSignatureDialog(QDialog):
 
     def get_text(self):
         return self.edit.text().strip()
-
 
 # --- Offboarding Wizard --- #
 class OffboardingWizard(QDialog):
@@ -3911,7 +3942,6 @@ class OffboardingWizard(QDialog):
 
         self.close()
 
-
 # --- Onboarding Wizard --- #
 class SupplyWizard(QDialog):
     def __init__(self, users, parent=None):
@@ -4387,7 +4417,6 @@ class SupplyWizard(QDialog):
 
         self.close()
 
-
 # --- Application ---#
 class OffboardManager(QWidget):
     def __init__(self):
@@ -4404,6 +4433,12 @@ class OffboardManager(QWidget):
 
         self.jsons_dir = os.path.join(os.path.dirname(__file__), "JSONs")
         os.makedirs(self.jsons_dir, exist_ok=True)
+
+        # --- POWERSHELL PORTABLE LOCATION ---
+        self.app_root = os.path.dirname(os.path.abspath(__file__))
+        self.pwsh_portable_dir = os.path.join(self.app_root, "pwsh_portable")
+        self.pwsh_path = os.path.join(self.pwsh_portable_dir, "pwsh")
+        self.ps_scripts_dir = os.path.join(self.app_root, "Powershell_Scripts")
 
         # --- Left menu with framed blocks ---
         left_panel = QVBoxLayout()
@@ -4447,33 +4482,14 @@ class OffboardManager(QWidget):
         self.connect_btn = styled_button("Retrieve Tenant Data")
         self.connect_btn.clicked.connect(self.open_data_sync_dialog)
 
-        self.upload_csv_btn = styled_button("Upload CSV Report")
-        self.upload_csv_btn.clicked.connect(self.upload_csv_file)
+        self.connect_graph_btn = styled_button("Connect M.Graph (Grant)")
+        self.connect_graph_btn.clicked.connect(self.connect_graph)
 
-        # Toggle button (Set / Go Back)
-        self.btn_set_path = styled_button("")  # text set later
-        self.btn_set_path.clicked.connect(self.toggle_default_path)
-        self.update_set_path_button()
-
-        # --- Hidden preview feature ---
-        # Button starts disabled and greyed out
-        self.btn_set_path.setEnabled(False)
-        self.btn_set_path.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #bbb;
-                border-radius: 6px;
-                padding: 6px;
-                color: gray;
-                background-color: #f0f0f0;
-            }
-        """)
-
-        # Register the secret keyboard shortcut Cmd+Ctrl+U (Mac) or Ctrl+Alt+U (Windows/Linux)
-        self.secret_shortcut = QShortcut(QKeySequence("Meta+Ctrl+U"), self)
-        self.secret_shortcut.activated.connect(self.enable_hidden_preview)
+        self.disconnect_graph_btn = styled_button("Disconnect M.Graph")
+        self.disconnect_graph_btn.clicked.connect(self.disconnect_graph)
 
         # Add buttons to layout
-        for b in [self.connect_btn, self.upload_csv_btn, self.btn_set_path]:
+        for b in [self.connect_btn, self.connect_graph_btn, self.disconnect_graph_btn]:
             connect_layout.addWidget(b)
 
         left_panel.addWidget(frame_connect)
@@ -5444,6 +5460,16 @@ class OffboardManager(QWidget):
 
         self.ps_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Powershell_Scripts")
 
+    def get_pwsh_path(self):
+        # macOS/Linux:
+        exe = os.path.join(self.pwsh_portable_dir, "pwsh")
+
+        # Windows:
+        if os.name == "nt":
+            exe = os.path.join(self.pwsh_portable_dir, "pwsh.exe")
+
+        return exe
+
     def open_advanced_search(self):
         # Detect active page
         page_name = None
@@ -5536,26 +5562,6 @@ class OffboardManager(QWidget):
                 return name
         return None
 
-    def enable_hidden_preview(self):
-        """Easter egg: unlock the hidden Set Path button."""
-        if not self.btn_set_path.isEnabled():
-            self.btn_set_path.setEnabled(True)
-            self.btn_set_path.setStyleSheet("""
-                QPushButton {
-                    border: 1px solid #bbb;
-                    border-radius: 6px;
-                    padding: 6px;
-                    background-color: #0078d7;
-                    color: white;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #1e90ff;
-                }
-            """)
-            QMessageBox.information(self, "Preview Mode Activated",
-                                    "🔓 Preview feature unlocked!\nYou can now change the default CSV directory.")
-
     def is_using_default_identity_dir(self):
         """Check if current default path is Database_Identity."""
         base_dir = os.path.dirname(__file__)
@@ -5582,18 +5588,8 @@ class OffboardManager(QWidget):
 
         QMessageBox.information(self, "Success", f"Default path set to:\n{config['default_csv_path']}")
 
-        # Update button text
-        self.update_set_path_button()
-
         # Refresh comboboxes after path change
         self.try_populate_comboboxes()
-
-    def update_set_path_button(self):
-        """Update the button label depending on current default path."""
-        if self.is_using_default_identity_dir():
-            self.btn_set_path.setText("Set CSV Default Path")
-        else:
-            self.btn_set_path.setText("Go Back to Default Directory")
 
     def update_tenant_info(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -5762,8 +5758,16 @@ class OffboardManager(QWidget):
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
 
-        # Use Logger worker with script_path + only arguments (no script twice!)
-        self.worker = PowerShellLoggerWorker(script_path, args, log_file)
+        # --- Create and start worker ---
+        self.current_log_file = log_file
+        pwsh = self.get_pwsh_path()
+
+        self.worker = PowerShellLoggerWorker(
+            pwsh,
+            script_path,
+            args,
+            log_file
+        )
 
         # Connect signals
         self.worker.output.connect(lambda line: self.console_output.append(line))
@@ -5891,6 +5895,7 @@ class OffboardManager(QWidget):
 
         bitlocker_action = QAction("Retrieve BitLocker Recovery Keys", self)
         bitlocker_action.triggered.connect(self.launch_bitlocker_dialog)
+        bitlocker_action.setEnabled(False)
         menu.addAction(bitlocker_action)
 
         menu.exec(self.devices_table.viewport().mapToGlobal(pos))
@@ -7472,29 +7477,76 @@ class OffboardManager(QWidget):
 
         self.display_exchange_dataframe(df[mask])
 
-    def upload_csv_file(self):
-        """Open file dialog, copy CSV to Database_Identity, and load it."""
-        path, _ = QFileDialog.getOpenFileName(self, "Select CSV", "", "CSV Files (*.csv)")
-        if not path:
-            return
+    def connect_graph(self):
+        import subprocess, json, os
+        from PyQt6.QtWidgets import QMessageBox
+
+        script = os.path.join(self.ps_scripts_dir, "Connect-IdentityToolbox.ps1")
+        pwsh = os.path.join(self.pwsh_portable_dir, "pwsh")
+
+        # IMPORTANT: extend module path
+        env = os.environ.copy()
+        env["PSModulePath"] = (
+            f"{self.pwsh_portable_dir}/Modules:"
+            f"{self.pwsh_portable_dir}/Modules/Microsoft.Graph/2.0.0:"
+            f"{env.get('PSModulePath', '')}"
+        )
+
+        cmd = [
+            pwsh,
+            "-NoLogo",
+            "-NoProfile",
+            "-File", script,
+            "-PwshRoot", self.pwsh_portable_dir
+        ]
 
         try:
-            target_dir = self.get_default_csv_path()
-            os.makedirs(target_dir, exist_ok=True)
-            target_path = os.path.join(target_dir, os.path.basename(path))
-            shutil.copy(path, target_path)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env
+            )
+            out = json.loads(result.stdout)
 
-            # Add to combobox & select it
-            if target_path not in [self.csv_selector.itemText(i) for i in range(self.csv_selector.count())]:
-                self.csv_selector.addItem(target_path)
-            self.csv_selector.setCurrentText(target_path)
+            if out.get("status") == "success":
+                QMessageBox.information(
+                    self,
+                    "Microsoft Graph",
+                    f"Connected as:\n{out.get('account')}"
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Microsoft Graph",
+                    f"Failed to connect:\n{out.get('message')}"
+                )
 
-            # Force reload into Identity table
-            self.load_selected_csv()
-
-            QMessageBox.information(self, "Success", f"CSV uploaded and loaded:\n{target_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to upload CSV:\n{e}")
+            QMessageBox.critical(self, "Microsoft Graph", f"Failed to connect:\n{e}")
+
+    def disconnect_graph(self):
+        import subprocess, json, os
+        from PyQt6.QtWidgets import QMessageBox
+
+        script = os.path.join(self.ps_scripts_dir, "Disconnect-IdentityToolbox.ps1")
+        pwsh = os.path.join(self.pwsh_portable_dir, "pwsh")
+
+        cmd = [
+            pwsh,
+            "-NoLogo",
+            "-NoProfile",
+            "-File", script,
+            "-PwshRoot", self.pwsh_portable_dir
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        try:
+            out = json.loads(result.stdout)
+            QMessageBox.information(
+                self, "Microsoft Graph",
+                f"You have been fully signed out.\nRemoved:\n{out.get('removed')}"
+            )
+        except:
+            QMessageBox.critical(self, "Microsoft Graph", "Disconnect failed.")
 
     def create_user(self):
         # Collect values safely → auto-detect widget type
@@ -7667,19 +7719,28 @@ class OffboardManager(QWidget):
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         log_path = os.path.join(log_dir, f"{timestamp}_create_random_users.log")
 
-        # --- Step C: Build PowerShell command
+        # --- Step C: Build PowerShell command (without pwsh prefix!)
         script_path = os.path.join(base_dir, "Powershell_Scripts", "create_random_users.ps1")
+
         cmd = [
-            "pwsh", "-ExecutionPolicy", "Bypass",
+            "-ExecutionPolicy", "Bypass",
             "-File", script_path,
             "-CsvPath", csv_path,
             "-LogPath", log_path
         ]
 
-        # --- Step D: Run in background QThread (keep reference!)
-        self.random_worker = PowerShellWorker(cmd)
+        # --- Step D: Run using portable PowerShell ---
+        pwsh = self.get_pwsh_path()  # IMPORTANT
+
+        self.random_worker = PowerShellWorker(pwsh, cmd)
+
+        # Only ONE handler
         self.random_worker.finished.connect(self.on_random_user_done)
+
         self.random_worker.start()
+
+        # Console header (only once)
+        self.console_output.append("🚀 Running create_random_users.ps1 …")
 
     def on_random_user_done(self, status, msg):
         self.random_status.setWordWrap(True)
@@ -7688,18 +7749,16 @@ class OffboardManager(QWidget):
         if status == "success":
             self.random_status.setText("Random users created successfully!")
         else:
-            if "Authentication" in msg:
-                self.random_status.setText("Authentication error (please login).")
-            elif "CSV not found" in msg:
-                self.random_status.setText("CSV file not found.")
-            else:
-                self.random_status.setText(msg.split("\n", 1)[0])
+            self.random_status.setText(msg.split("\n", 1)[0])
 
+        # show result in console
+        self.console_output.append(msg)
+
+        # refresh the log list
         try:
+            self._last_random_log = log_path
             self.refresh_log_list()
-            if hasattr(self, "_last_random_log"):
-                pass
-        except Exception:
+        except:
             pass
 
     def generate_csv_template(self):
@@ -8430,7 +8489,13 @@ class OffboardManager(QWidget):
         mfa_capable = int(mfa_capable_series.sum())
 
         # Last sign-in recency
-        lsi = pd.to_datetime(s("LastSignInDateTime"), errors="coerce", utc=True)
+        lsi = pd.to_datetime(
+            s("LastSignInDateTime"),
+            dayfirst=True,
+            errors="coerce",
+            utc=True
+        )
+
         never_signed = int(lsi.isna().sum())
         inactive_90 = int(((pd.Timestamp.utcnow() - lsi) > pd.Timedelta(days=90)).fillna(False).sum())
 
@@ -9612,7 +9677,6 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

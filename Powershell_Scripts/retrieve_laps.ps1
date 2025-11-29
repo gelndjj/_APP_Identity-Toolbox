@@ -29,7 +29,7 @@ function Emit-Result {
 
 try {
     if (-not (Get-MgContext)) {
-        Connect-MgGraph -Scopes "Device.Read.All,Directory.Read.All" -NoWelcome
+        Connect-MgGraph -Scopes "Device.Read.All,Directory.Read.All,DeviceLocalCredential.Read.All" -NoWelcome
     }
 } catch {
     Emit-Result @{

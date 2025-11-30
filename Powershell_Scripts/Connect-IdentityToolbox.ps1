@@ -18,11 +18,7 @@ $env:PSModulePath = "$PwshRoot/Modules"
 
 $scopes = @(
     "User.Read",
-    "User.ReadWrite.All",
-    "Directory.Read.All",
     "Directory.ReadWrite.All",
-    "Group.ReadWrite.All",
-    "GroupMember.ReadWrite.All",
     "UserAuthenticationMethod.ReadWrite.All",
     "Device.ReadWrite.All",
     "DeviceManagementManagedDevices.Read.All",
@@ -30,8 +26,8 @@ $scopes = @(
     "BitlockerKey.Read.All",
     "EntitlementManagement.ReadWrite.All",
     "RoleManagement.Read.Directory",
-    "Policy.Read.All",
-    "Application.Read.All"
+    "Application.Read.All",
+    "Policy.Read.All"
 )
 
 

@@ -62,18 +62,13 @@ Access Packages | `export-entra_accesspackages.ps1` | `JSONs/AccessPackages.json
 
 ### Requirements
 - Python **3.13+**
-- PowerShell **7.5+**
+- PowerShell **7.5+** (Portable version included)
 - Microsoft Graph SDK  
   ```powershell
   Install-Module Microsoft.Graph -Scope AllUsers
   ```
-  
-### 3. Install dependencies
-```bash
-pip install -r requirements.txt
-```
 
-### 4. Run the app
+### Run the app
 ```bash
 python id-toolbox.py
 ```
@@ -81,9 +76,6 @@ python id-toolbox.py
 ### 🔑 Microsoft Graph Setup
 	1.	Create an App Registration in Entra ID
 	2.	Assign delegated permissions:
-	•	User.ReadWrite.All
-	•	Directory.ReadWrite.All
-	•	EntitlementManagement.ReadWrite.All
 	3.	Deploy app via Intune Company Portal if required
 
 ### 🧪 Example CSV
@@ -97,12 +89,17 @@ python id-toolbox.py
 Required delegated scopes:
 
 ```commandline
-User.ReadWrite.All
-Directory.ReadWrite.All
-Group.ReadWrite.All
-DeviceManagementServiceConfig.Read.All
-Device.Read.All
-EntitlementManagement.ReadWrite.All
+    "User.Read",
+    "Directory.ReadWrite.All",
+    "UserAuthenticationMethod.ReadWrite.All",
+    "Device.ReadWrite.All",
+    "DeviceManagementManagedDevices.Read.All",
+    "DeviceLocalCredential.Read.All",
+    "BitlockerKey.Read.All",
+    "EntitlementManagement.ReadWrite.All",
+    "RoleManagement.Read.Directory",
+    "Application.Read.All",
+    "Policy.Read.All"
 ```
 
 ## 🗺️ Roadmap
@@ -129,7 +126,6 @@ EntitlementManagement.ReadWrite.All
 |---|:---:|---|
 | **Windows packaging (EXE/MSI)** | 🟡 In Progress | Build for Windows admins |
 | **Assign User → Autopilot Device** | 🟡 In Progress | Right-click to bind user to HW hash device |
-| **Multi-language support (EN/FR/ES)** | 🟡 In Progress | UI localization engine |
 
 | **Planned** | **Status** | **Description** |
 |---|:---:|---|
@@ -141,13 +137,15 @@ EntitlementManagement.ReadWrite.All
 
 ### 📸 Screenshots
 
-|   ![IdDashboard](Screenshots/Identity_Dashboard.png)    | ![GroupsDashboard](Screenshots/Grps_Dashboard.png) |
-|:-------------------------------------------------------:|:--------------------------------------------------:|
-|                   Identity Dashboard                    |                  Groups Dashboard                  |
-| ![EntraUserCreation](Screenshots/EntraUserCreation.png) |     ![IdTable](Screenshots/IdentityTable.png)      |
-|                   Entra User Creation                   |                  Identities Table                  |
-|  ![UsrGrpsComp](Screenshots/UserGroupsComparison.png)   |      ![PSConsole](Screenshots/PSConsole.png)       |
-|                 User Groups Comparison                  |                 PowerShell Console                 |
+|    ![IdDashboard](Screenshots/Identity Dashboard.png)     |  ![GroupsDashboard](Screenshots/Groups Dashboard.png)   |
+|:---------------------------------------------------------:|:-------------------------------------------------------:|
+|                    Identity Dashboard                     |                    Groups Dashboard                     |
+| ![EntraUserCreation](Screenshots/Entra User Creation.png) |      ![IdTable](Screenshots/Identities Table.png)       |
+|                    Entra User Creation                    |                    Identities Table                     |
+|  ![UsrGrpsComp](Screenshots/User Groups Comparison.png)   | ![UsrGrpsMgmt](Screenshots/Users Groups Management.png) |
+|                  User Groups Comparison                   |                 Users Groups Comparison                 |
+|     ![RtrData](Screenshots/Retrieve Tenant Data.png)      |          ![PSConsole](Screenshots/Console.png)          |
+|                   Retrieve Tenant Data                    |                   Powershell Console                    |
 
 
 ### ⚖️ License

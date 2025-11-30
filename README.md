@@ -63,10 +63,16 @@ Access Packages | `export-entra_accesspackages.ps1` | `JSONs/AccessPackages.json
 ### Requirements
 - Python **3.13+**
 - PowerShell **7.5+** (Portable version included)
-- Microsoft Graph SDK  
+- Microsoft Graph SDK 
+
   ```powershell
   Install-Module Microsoft.Graph -Scope AllUsers
   ```
+- Exchange Online
+  ```powershell
+  Install-Module -Name ExchangeOnlineManagement
+  ```
+
 
 ### Run the app
 ```bash
@@ -75,14 +81,8 @@ python id-toolbox.py
 
 ### 🔑 Microsoft Graph Setup
 	1.	Create an App Registration in Entra ID
-	2.	Assign delegated permissions:
+	2.	Assign delegated permissions (see Graph API Permissions)
 	3.	Deploy app via Intune Company Portal if required
-
-### 🧪 Example CSV
-
-| Display Name | First name | Last name | User Principal Name     | Password  | Job title  | Company name | Department | Usage location |
-|--------------|------------|-----------|-------------------------|-----------|------------|--------------|------------|----------------|
-| John Doe     | John       | Doe       | john.doe@contoso.com   | Pass@123  | Engineer   | Contoso      | IT         | FR             |
 
 ### ☁️ Graph API Permissions
 

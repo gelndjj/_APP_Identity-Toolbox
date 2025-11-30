@@ -137,15 +137,15 @@ Required delegated scopes:
 
 ### 📸 Screenshots
 
-|    ![IdDashboard](Screenshots/Identity Dashboard.png)     |  ![GroupsDashboard](Screenshots/Groups Dashboard.png)   |
-|:---------------------------------------------------------:|:-------------------------------------------------------:|
-|                    Identity Dashboard                     |                    Groups Dashboard                     |
-| ![EntraUserCreation](Screenshots/Entra User Creation.png) |      ![IdTable](Screenshots/Identities Table.png)       |
-|                    Entra User Creation                    |                    Identities Table                     |
-|  ![UsrGrpsComp](Screenshots/User Groups Comparison.png)   | ![UsrGrpsMgmt](Screenshots/Users Groups Management.png) |
-|                  User Groups Comparison                   |                 Users Groups Comparison                 |
-|     ![RtrData](Screenshots/Retrieve Tenant Data.png)      |          ![PSConsole](Screenshots/Console.png)          |
-|                   Retrieve Tenant Data                    |                   Powershell Console                    |
+|    ![IdDashboard](Screenshots/IdentityDashboard.png)    |   ![GroupsDashboard](Screenshots/GroupsDashboard.png)   |
+|:-------------------------------------------------------:|:-------------------------------------------------------:|
+|                   Identity Dashboard                    |                    Groups Dashboard                     |
+| ![EntraUserCreation](Screenshots/EntraUserCreation.png) |       ![IdTable](Screenshots/IdentitiesTable.png)       |
+|                   Entra User Creation                   |                    Identities Table                     |
+|  ![UsrGrpsComp](Screenshots/UserGroupsComparison.png)   | ![UsrGrpsMgmt](Screenshots/Users Groups Management.png) |
+|                 User Groups Comparison                  |                 Users Groups Comparison                 |
+|     ![RtrData](Screenshots/RetrieveTenantData.png)      |          ![PSConsole](Screenshots/Console.png)          |
+|                  Retrieve Tenant Data                   |                   Powershell Console                    |
 
 
 ### ⚖️ License

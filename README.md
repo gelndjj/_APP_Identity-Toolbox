@@ -91,6 +91,7 @@ Required delegated scopes:
 ```commandline
     "User.Read",
     "Directory.ReadWrite.All",
+    "User-PasswordProfile.ReadWrite.All",
     "UserAuthenticationMethod.ReadWrite.All",
     "Device.ReadWrite.All",
     "DeviceManagementManagedDevices.Read.All",

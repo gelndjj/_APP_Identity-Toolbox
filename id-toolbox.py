@@ -15,32 +15,75 @@ from PyQt6.QtGui import (QAction, QIcon, QShortcut, QKeySequence, QColor, QBrush
 from PyQt6 import QtGui, QtCore
 from faker import Faker
 
-class ClickableCard(QFrame):
-    clicked = pyqtSignal()
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class UnifiedPowerShellWorker(QThread):
+    output = pyqtSignal(str)  # streamed lines
+    finished = pyqtSignal(str, str)  # ("success"/"error", message)
+    error = pyqtSignal(str)  # fatal Python-level exceptions
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-class PowerShellLoggerWorker(QThread):
-    output = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-
-    def __init__(self, pwsh_path, script_path, args, log_file):
+    def __init__(self, pwsh_path, script_path, args=None, log_file=None):
         super().__init__()
         self.pwsh_path = pwsh_path
         self.script_path = script_path
-        self.args = args
+        self.args = args or []
         self.log_file = log_file
 
     def run(self):
         try:
-            # Correct PowerShell block including param()
+            # Build PowerShell command
+            cmd = [
+                      self.pwsh_path,
+                      "-ExecutionPolicy", "Bypass",
+                      "-NoProfile",
+                      "-File", self.script_path
+                  ] + self.args
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env={**os.environ, "TERM": "dumb"}  # prevents PS from changing formatting
+            )
+
+            # Optional: log to file
+            f = open(self.log_file, "w", encoding="utf-8") if self.log_file else None
+
+            for line in iter(process.stdout.readline, ""):
+                line = line.rstrip()
+                if line:
+                    self.output.emit(line)
+                    if f: f.write(line + "\n")
+
+            process.stdout.close()
+            ret = process.wait()
+
+            if f: f.close()
+
+            if ret == 0:
+                self.finished.emit("success", "Process completed successfully.")
+            else:
+                self.finished.emit("error", f"Exited with code {ret}")
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class PowerShellWorker(QThread):
+    output = pyqtSignal(str)
+    finished = pyqtSignal(str, str)  # status, message
+    error = pyqtSignal(str)
+
+    def __init__(self, pwsh_path, script_path, args, log_file=None):
+        super().__init__()
+        self.pwsh_path = pwsh_path
+        self.script_path = script_path
+        self.args = args or []
+        self.log_file = log_file
+
+    def run(self):
+        try:
             ps_cmd = (
                 f"& {{ param($args); "
                 f"$ProgressPreference='SilentlyContinue'; "
@@ -53,7 +96,7 @@ class PowerShellLoggerWorker(QThread):
                     "-ExecutionPolicy", "Bypass",
                     "-NoProfile",
                     "-Command", ps_cmd,
-                ] + self.args,  # passed directly to $args
+                ] + self.args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -61,106 +104,39 @@ class PowerShellLoggerWorker(QThread):
                 env={**os.environ, "TERM": "dumb"}
             )
 
-            with open(self.log_file, "w", encoding="utf-8") as f:
-                for line in process.stdout:
-                    line = line.strip()
-                    if line:
-                        self.output.emit(line)
+            f = open(self.log_file, "w", encoding="utf-8") if self.log_file else None
+
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:
+                    self.output.emit(line)
+                    if f:
                         f.write(line + "\n")
 
             process.wait()
+            if f:
+                f.close()
+
             if process.returncode == 0:
-                self.finished.emit(
-                    f"Script {os.path.basename(self.script_path)} completed successfully."
-                )
+                self.finished.emit("success", "")
             else:
-                self.error.emit(f"Script exited with code {process.returncode}")
+                self.finished.emit("error", f"Exited with code {process.returncode}")
 
         except Exception as e:
             self.error.emit(str(e))
 
-class PowerShellWorkerWithParam(QThread):
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
 
-    def __init__(self, pwsh_path, script_path, upn):
-        super().__init__()
-        self.pwsh_path = pwsh_path
-        self.script_path = script_path
-        self.upn = upn
+class ClickableCard(QFrame):
+    clicked = pyqtSignal()
 
-    def run(self):
-        try:
-            subprocess.run(
-                [
-                    self.pwsh_path,
-                    "-ExecutionPolicy", "Bypass",
-                    "-NoProfile",
-                    "-Command",
-                    f"& {{ $ProgressPreference='SilentlyContinue'; & '{self.script_path}' -upn '{self.upn}' }}"
-                ],
-                check=True,
-                env={**os.environ, "TERM": "dumb"}
-            )
-            self.finished.emit(f"User {self.upn} disabled successfully.")
-        except subprocess.CalledProcessError as e:
-            self.error.emit(f"PowerShell error: {e}")
-        except Exception as e:
-            self.error.emit(str(e))
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-class PowerShellWorker(QThread):
-    finished = pyqtSignal(str, str)
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
-    def __init__(self, pwsh_path, command):
-        super().__init__()
-        self.pwsh_path = pwsh_path
-        self.command = command  # list of args (no pwsh.exe)
-
-    def run(self):
-        try:
-            full_cmd = [self.pwsh_path] + self.command
-            result = subprocess.run(full_cmd, capture_output=True, text=True)
-
-            if result.returncode == 0:
-                self.finished.emit("success", result.stdout)
-            else:
-                self.finished.emit("error", result.stderr or result.stdout)
-        except Exception as e:
-            self.finished.emit("error", str(e))
-
-class StreamingPowerShellWorker(QThread):
-    output = pyqtSignal(str)
-    finished = pyqtSignal(str, str)
-
-    def __init__(self, pwsh_path, command):
-        super().__init__()
-        self.pwsh_path = pwsh_path
-        self.command = command
-
-    def run(self):
-        try:
-            full_cmd = [self.pwsh_path] + self.command
-            process = subprocess.Popen(
-                full_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-
-            for line in iter(process.stdout.readline, ""):
-                if line:
-                    self.output.emit(line.strip())
-
-            process.stdout.close()
-            retcode = process.wait()
-
-            if retcode == 0:
-                self.finished.emit("success", "Process completed successfully.")
-            else:
-                self.finished.emit("error", f"Exited with code {retcode}")
-
-        except Exception as e:
-            self.finished.emit("error", str(e))
 
 class CsvDropZone(QLabel):
     def __init__(self, parent=None, on_csv_dropped=None):
@@ -227,6 +203,7 @@ class CsvDropZone(QLabel):
                     if self.on_csv_dropped:
                         self.on_csv_dropped(file_path)
                     break
+
 
 class DataSyncDialog(QDialog):
     """
@@ -497,7 +474,6 @@ class DataSyncDialog(QDialog):
         self.task_index = -1
         self.run_next()
 
-    # ---------- Run current task, schedule next with a delay ----------
     def run_next(self):
         self.task_index += 1
         if self.task_index >= len(self.tasks):
@@ -512,42 +488,36 @@ class DataSyncDialog(QDialog):
 
         if not os.path.exists(t["script"]):
             QMessageBox.critical(self, "Missing script", f"Script not found:\n{t['script']}")
-            # skip to next
             QTimer.singleShot(5000, self.run_next)
             return
 
-        # log file per task
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(getattr(parent, "logs_dir", os.getcwd()),
-                                f"{timestamp}_{os.path.basename(t['script'])}.log")
+        log_file = os.path.join(
+            getattr(parent, "logs_dir", os.getcwd()),
+            f"{timestamp}_{os.path.basename(t['script'])}.log"
+        )
 
-        # show console and header
+        # show console header
         if getattr(parent, "console_output", None):
             parent.console_output.append(f"\n▶ {t['name']} — starting…")
             parent.console_output.append(f"Script: {t['script']}")
             parent.console_output.append(f"Log:    {log_file}\n")
             parent.show_named_page("console")
 
-        # build worker
-        from PyQt6 import QtGui  # for live scroll
         pwsh = self.parent().get_pwsh_path()
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            t["script"],
-            t["args"],
-            log_file
+
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            script_path=t["script"],
+            args=t["args"],
+            log_file=log_file
         )
 
-        if getattr(parent, "console_output", None):
-            self.worker.output.connect(lambda line: (
-                parent.console_output.append(line),
-                parent.console_output.moveCursor(QtGui.QTextCursor.MoveOperation.End)
-            ))
+        # Append result to console
+        self.worker.finished.connect(lambda status, msg: parent.console_output.append(msg))
 
-        self.worker.error.connect(lambda msg: QMessageBox.critical(self, f"{t['name']} error", msg))
-        self.worker.finished.connect(lambda _: self.on_task_finished(t, log_file))
+        self.worker.finished.connect(lambda status, msg: self.on_task_finished(t, log_file))
 
-        # keep log list fresh
         if hasattr(parent, "refresh_log_list"):
             self.worker.finished.connect(parent.refresh_log_list)
 
@@ -577,6 +547,7 @@ class DataSyncDialog(QDialog):
             except Exception:
                 pass
 
+
 # --- Groups Comparison---#
 class CompareGroupsWorker(QThread):
     finished = pyqtSignal(dict)
@@ -590,8 +561,14 @@ class CompareGroupsWorker(QThread):
 
     def run(self):
         try:
+            pwsh = self.parent().get_pwsh_path() if hasattr(self.parent(), "get_pwsh_path") else None
+            if not pwsh:
+                raise RuntimeError("Cannot locate embedded PowerShell (pwsh portable).")
+
             cmd = [
-                "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                pwsh,
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
                 "-File", self.script_path,
                 "-User1", self.user1,
                 "-User2", self.user2
@@ -608,6 +585,7 @@ class CompareGroupsWorker(QThread):
 
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GroupsComparisonDialog(QDialog):
     def __init__(self, parent=None, upn_list=None):
@@ -846,184 +824,142 @@ class GroupsComparisonDialog(QDialog):
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.resizeRowsToContents()
 
+
 # --- Groups Management---#
 class GroupManagementDialog(QDialog):
     """
-    Assign THEN (after 3s) Remove the same selected user(s) to/from chosen groups.
-    Right pane has two panels: Assign and Remove.
+    Assign THEN (after 3s) Remove the same selected user(s) from chosen groups.
     """
 
     def __init__(self, parent=None, user_upns=None, csv_path=None):
         super().__init__(parent)
         self.user_upns = user_upns or []
         self.groups_csv_path = csv_path
+
         self.setWindowTitle("Group(s) Management — Assign then Remove")
         self.setMinimumWidth(1000)
         self.setMinimumHeight(560)
 
-        self.assign_groups = []  # [{'DisplayName', 'ObjectId'}]
-        self.remove_groups = []  # same shape
-
-        self._all_groups = []  # source list from CSV
-        self._results_assign = []  # parsed json objects
-        self._results_remove = []  # parsed json objects
+        self._all_groups = []
+        self._results_assign = []
+        self._results_remove = []
 
         self.assign_toggle_state = {"checked": False}
         self.remove_toggle_state = {"checked": False}
 
-        # ---------- Layout ----------
+        # ---------------- UI ----------------
         main = QVBoxLayout(self)
 
-        # Top: Users list
-        users_lbl = QLabel("Selected User(s)")
-        users_lbl.setStyleSheet("font-weight:600;")
-        main.addWidget(users_lbl)
+        # Users list
+        lbl = QLabel("Selected User(s)")
+        lbl.setStyleSheet("font-weight:600;")
+        main.addWidget(lbl)
 
         self.user_list = QListWidget()
         self.user_list.addItems(self.user_upns)
-        self.user_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.user_list.setMinimumHeight(120)
         self.user_list.setMaximumHeight(120)
         main.addWidget(self.user_list)
 
-        # Middle: two group panels side-by-side
         twin = QHBoxLayout()
 
-        # Left panel: Assign
-        left_panel = QVBoxLayout()
-        left_panel.addWidget(QLabel("Assign to these groups"))
+        # ---------------- ASSIGN PANEL ----------------
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Assign to these groups"))
 
         self.search_assign = QLineEdit()
         self.search_assign.setPlaceholderText("Search groups to ASSIGN…")
         self.search_assign.textChanged.connect(self._filter_assign)
-        left_panel.addWidget(self.search_assign)
+        left.addWidget(self.search_assign)
 
-        # Select All / Clear button for ASSIGN column
         self.assign_toggle_btn = QPushButton("Select All")
-        self.assign_toggle_btn.setFixedWidth(100)
+        self.assign_toggle_btn.clicked.connect(self._toggle_assign)
+        left.addWidget(self.assign_toggle_btn)
 
-        def toggle_assign():
-            self.toggle_checkboxes(self.table_assign, self.assign_toggle_state)
-            self.assign_toggle_btn.setText(
-                "Clear" if self.assign_toggle_state["checked"] else "Select All"
-            )
-
-        self.assign_toggle_btn.clicked.connect(toggle_assign)
-        left_panel.addWidget(self.assign_toggle_btn)
-
-        # Assign table
         self.table_assign = QTableWidget(0, 2)
         self.table_assign.setHorizontalHeaderLabels(["Assign", "Group Name"])
         self.table_assign.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table_assign.setColumnWidth(0, 80)
-        self.table_assign.setMinimumHeight(330)
-        self.table_assign.setMaximumHeight(330)
-        left_panel.addWidget(self.table_assign)
+        left.addWidget(self.table_assign)
+        twin.addLayout(left, 1)
 
-        twin.addLayout(left_panel, 1)
-
-        # Right panel: Remove
-        right_panel = QVBoxLayout()
-        right_panel.addWidget(QLabel("Remove from these groups"))
+        # ---------------- REMOVE PANEL ----------------
+        right = QVBoxLayout()
+        right.addWidget(QLabel("Remove from these groups"))
 
         self.search_remove = QLineEdit()
         self.search_remove.setPlaceholderText("Search groups to REMOVE…")
         self.search_remove.textChanged.connect(self._filter_remove)
-        right_panel.addWidget(self.search_remove)
+        right.addWidget(self.search_remove)
 
-        # Select All / Clear button for REMOVE column
         self.remove_toggle_btn = QPushButton("Select All")
-        self.remove_toggle_btn.setFixedWidth(100)
+        self.remove_toggle_btn.clicked.connect(self._toggle_remove)
+        right.addWidget(self.remove_toggle_btn)
 
-        def toggle_remove():
-            self.toggle_checkboxes(self.table_remove, self.remove_toggle_state)
-            self.remove_toggle_btn.setText(
-                "Clear" if self.remove_toggle_state["checked"] else "Select All"
-            )
-
-        self.remove_toggle_btn.clicked.connect(toggle_remove)
-        right_panel.addWidget(self.remove_toggle_btn)
-
-        # Remove table
         self.table_remove = QTableWidget(0, 2)
         self.table_remove.setHorizontalHeaderLabels(["Remove", "Group Name"])
         self.table_remove.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table_remove.setColumnWidth(0, 80)
-        self.table_remove.setMinimumHeight(330)
-        self.table_remove.setMaximumHeight(330)
-        right_panel.addWidget(self.table_remove)
+        right.addWidget(self.table_remove)
+        twin.addLayout(right, 1)
 
-        twin.addLayout(right_panel, 1)
         main.addLayout(twin)
 
-        # Bottom buttons
+        # Buttons
         btns = QHBoxLayout()
         btns.addStretch(1)
+
         self.run_btn = QPushButton("Run — Assign then Remove")
         self.run_btn.clicked.connect(self._start_sequence)
         btns.addWidget(self.run_btn)
+
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
         btns.addWidget(cancel)
+
         main.addLayout(btns)
 
-        # Load CSV
-        self._load_groups_csv()
+        self._load_csv_groups()
 
-    def toggle_checkboxes(self, table, state_holder):
-        """Toggle only visible checkboxes in a filtered table."""
-        new_state = not state_holder["checked"]
-        state_holder["checked"] = new_state
-
-        for row in range(table.rowCount()):
-            if table.isRowHidden(row):
-                continue
-
-            item = table.item(row, 0)
-            if item:
-                item.setCheckState(
-                    Qt.CheckState.Checked if new_state else Qt.CheckState.Unchecked
-                )
-
-    # ---------- Load groups CSV ----------
-    def _load_groups_csv(self):
+    # --------------------------------------------------------------
+    # CSV LOADING
+    # --------------------------------------------------------------
+    def _load_csv_groups(self):
         import pandas as pd
+
         try:
             df = pd.read_csv(self.groups_csv_path, dtype=str).fillna("")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to read Groups CSV:\n{e}")
+            QMessageBox.critical(self, "Error", f"Could not read CSV:\n{e}")
             self.close()
             return
 
-        df.columns = [c.strip().lower() for c in df.columns]
-        id_col = next((c for c in df.columns if "object" in c and "id" in c), None)
-        name_col = next((c for c in df.columns if "display" in c and "name" in c), None)
-        if not id_col or not name_col:
-            QMessageBox.critical(self, "Invalid CSV", "Groups CSV missing Object ID or Display Name columns.")
+        df.columns = [c.lower().strip() for c in df.columns]
+        idcol = next((c for c in df.columns if "object" in c and "id" in c), None)
+        namecol = next((c for c in df.columns if "display" in c and "name" in c), None)
+
+        if not idcol or not namecol:
+            QMessageBox.critical(self, "Error", "CSV missing Object ID / Display Name columns")
             self.close()
             return
 
-        self._all_groups = [{"DisplayName": row[name_col], "ObjectId": row[id_col]} for _, row in df.iterrows()]
-        self._populate_tables(self._all_groups)
+        self._all_groups = [
+            {"DisplayName": row[namecol], "ObjectId": row[idcol]}
+            for _, row in df.iterrows()
+        ]
 
-    def _populate_tables(self, groups):
-        # Assign table
-        self.table_assign.setRowCount(len(groups))
+        self._populate(self.table_assign, self._all_groups)
+        self._populate(self.table_remove, self._all_groups)
+
+    def _populate(self, table, groups):
+        table.setRowCount(len(groups))
         for i, g in enumerate(groups):
             chk = QTableWidgetItem()
             chk.setCheckState(Qt.CheckState.Unchecked)
-            self.table_assign.setItem(i, 0, chk)
-            self.table_assign.setItem(i, 1, QTableWidgetItem(g["DisplayName"]))
+            table.setItem(i, 0, chk)
+            table.setItem(i, 1, QTableWidgetItem(g["DisplayName"]))
 
-        # Remove table
-        self.table_remove.setRowCount(len(groups))
-        for i, g in enumerate(groups):
-            chk = QTableWidgetItem()
-            chk.setCheckState(Qt.CheckState.Unchecked)
-            self.table_remove.setItem(i, 0, chk)
-            self.table_remove.setItem(i, 1, QTableWidgetItem(g["DisplayName"]))
-
-    # ---------- Filters ----------
+    # --------------------------------------------------------------
+    # Filters
+    # --------------------------------------------------------------
     def _filter_assign(self, text):
         t = text.lower()
         for r in range(self.table_assign.rowCount()):
@@ -1036,345 +972,229 @@ class GroupManagementDialog(QDialog):
             name = self.table_remove.item(r, 1).text().lower()
             self.table_remove.setRowHidden(r, t not in name)
 
-    # ---------- Sequence runners ----------
+    # --------------------------------------------------------------
+    # Toggles
+    # --------------------------------------------------------------
+    def _toggle_assign(self):
+        new = not self.assign_toggle_state["checked"]
+        self.assign_toggle_state["checked"] = new
+
+        for r in range(self.table_assign.rowCount()):
+            if not self.table_assign.isRowHidden(r):
+                self.table_assign.item(r, 0).setCheckState(
+                    Qt.CheckState.Checked if new else Qt.CheckState.Unchecked
+                )
+
+        self.assign_toggle_btn.setText("Clear" if new else "Select All")
+
+    def _toggle_remove(self):
+        new = not self.remove_toggle_state["checked"]
+        self.remove_toggle_state["checked"] = new
+
+        for r in range(self.table_remove.rowCount()):
+            if not self.table_remove.isRowHidden(r):
+                self.table_remove.item(r, 0).setCheckState(
+                    Qt.CheckState.Checked if new else Qt.CheckState.Unchecked
+                )
+
+        self.remove_toggle_btn.setText("Clear" if new else "Select All")
+
+    # --------------------------------------------------------------
+    # Sequence Runner
+    # --------------------------------------------------------------
     def _start_sequence(self):
-        # Gather selections
-        assign_names = [
-            self.table_assign.item(i, 1).text()
-            for i in range(self.table_assign.rowCount())
-            if self.table_assign.item(i, 0).checkState() == Qt.CheckState.Checked
-        ]
-        remove_names = [
-            self.table_remove.item(i, 1).text()
-            for i in range(self.table_remove.rowCount())
-            if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
+        assign = [
+            self.table_assign.item(r, 1).text()
+            for r in range(self.table_assign.rowCount())
+            if self.table_assign.item(r, 0).checkState() == Qt.CheckState.Checked
         ]
 
-        # Nothing selected
-        if not assign_names and not remove_names:
-            QMessageBox.warning(
-                self, "Nothing to do",
-                "Select at least one group to assign or remove."
-            )
+        remove = [
+            self.table_remove.item(r, 1).text()
+            for r in range(self.table_remove.rowCount())
+            if self.table_remove.item(r, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+        if not assign and not remove:
+            QMessageBox.warning(self, "Nothing Selected", "Choose at least 1 group.")
             return
 
-        # Map to IDs
-        name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
-        self.assign_ids = [name2id[n] for n in assign_names if n in name2id]
-        self.remove_ids = [name2id[n] for n in remove_names if n in name2id]
+        mapID = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
 
-        # Disable button
+        self.assign_ids = [mapID[n] for n in assign if n in mapID]
+        self.remove_ids = [mapID[n] for n in remove if n in mapID]
+
         self.run_btn.setEnabled(False)
 
-        # --- Case 1: Assign AND Remove ---
+        # Case 1: Assign AND Remove
         if self.assign_ids and self.remove_ids:
             self.run_btn.setText("⏳ Assigning…")
             self._run_ps(
-                script_name="assign_users_to_groups.ps1",
-                upns=self.user_upns,
-                group_ids=self.assign_ids,
-                on_done=lambda out, err: self._after_assign(out, err, do_remove=True)
+                "assign_users_to_groups.ps1",
+                self.assign_ids,
+                lambda: self._after_assign(do_remove=True)
             )
             return
 
-        # --- Case 2: Assign only ---
-        if self.assign_ids and not self.remove_ids:
+        # Assign only
+        if self.assign_ids:
             self.run_btn.setText("⏳ Assigning…")
             self._run_ps(
-                script_name="assign_users_to_groups.ps1",
-                upns=self.user_upns,
-                group_ids=self.assign_ids,
-                on_done=lambda out, err: self._after_assign(out, err, do_remove=False)
+                "assign_users_to_groups.ps1",
+                self.assign_ids,
+                lambda: self._after_assign(do_remove=False)
             )
             return
 
-        # --- Case 3: Remove only ---
-        if self.remove_ids and not self.assign_ids:
+        # Remove only
+        if self.remove_ids:
             self.run_btn.setText("⏳ Removing…")
             self._run_ps(
-                script_name="remove_users_from_groups.ps1",
-                upns=self.user_upns,
-                group_ids=self.remove_ids,
-                on_done=self._after_remove
+                "remove_users_from_groups.ps1",
+                self.remove_ids,
+                self._after_remove
             )
-            return
 
-    def _after_assign(self, stdout, stderr, do_remove=False):
-        parsed = self._parse_json_from_log(self.current_log_file)
+    # --------------------------------------------------------------
+    # PowerShell Execution
+    # --------------------------------------------------------------
+    def _run_ps(self, script_name, group_ids, callback):
+        import datetime, os
 
-        # --- Handle multiple group assignments more clearly ---
-        if parsed and len(parsed) > 1:
-            self._results_assign = [{
-                "Phase": "Assign",
-                "UserUPN": ", ".join(self.user_upns),
-                "GroupName": f"{len(parsed)} groups",
-                "Status": "✅ All assigned successfully"
-            }]
-        elif parsed:
-            for r in parsed:
-                r["Phase"] = "Assign"
-            self._results_assign = parsed
-        else:
-            self._results_assign = [{
-                "Phase": "Assign",
-                "UserUPN": ", ".join(self.user_upns),
-                "GroupName": "None",
-                "Status": "No groups selected or no output returned"
-            }]
+        script_path = os.path.join(os.path.dirname(__file__), "Powershell_Scripts", script_name)
 
-        if not do_remove:
-            self._finish(stdout, stderr)
-            return
-
-        # Assign THEN Remove mode
-        self.run_btn.setText("⏳ Waiting 3s, then Removing…")
-        QTimer.singleShot(3000, self._start_remove_phase)
-
-    def _start_remove_phase(self):
-        name2id = {g["DisplayName"]: g["ObjectId"] for g in self._all_groups}
-        remove_ids = [
-            name2id[self.table_remove.item(i, 1).text()]
-            for i in range(self.table_remove.rowCount())
-            if self.table_remove.item(i, 0).checkState() == Qt.CheckState.Checked
-               and self.table_remove.item(i, 1).text() in name2id
-        ]
-        self.remove_ids = remove_ids
-
-        # If NO remove groups → skip
-        if not remove_ids:
-            self._finish("", "")
-            return
-
-        self.run_btn.setText("⏳ Removing…")
-        self._run_ps(
-            script_name="remove_users_from_groups.ps1",
-            upns=self.user_upns,
-            group_ids=remove_ids,
-            on_done=self._after_remove
-        )
-
-    def _after_remove(self, stdout, stderr):
-        parsed = self._parse_json_from_log(self.current_log_file)
-
-        # --- Handle multiple group removals more clearly ---
-        if parsed and len(parsed) > 1:
-            self._results_remove = [{
-                "Phase": "Remove",
-                "UserUPN": ", ".join(self.user_upns),
-                "GroupName": f"{len(parsed)} groups",
-                "Status": "✅ All removed successfully"
-            }]
-        elif parsed:
-            for r in parsed:
-                r["Phase"] = "Remove"
-            self._results_remove = parsed
-        else:
-            self._results_remove = [{
-                "Phase": "Remove",
-                "UserUPN": ", ".join(self.user_upns),
-                "GroupName": "None",
-                "Status": "No groups selected or no output returned"
-            }]
-
-        self._finish(stdout, stderr)
-
-    def _finish(self, stdout, stderr):
-        """Merge results and display."""
-        if not self._results_assign and not self._results_remove:
-            self._results_assign = [{
-                "Phase": "Assign",
-                "UserUPN": ", ".join(self.user_upns),
-                "GroupName": "None",
-                "Status": "No groups selected or no output returned"
-            }]
-
-        if not self._results_remove and self._results_assign:
-            for r in self._results_assign:
-                r.setdefault("Phase", "Assign")
-        if not self._results_assign and self._results_remove:
-            for r in self._results_remove:
-                r.setdefault("Phase", "Remove")
-
-        self._show_results()
-
-    # ---------- PowerShell runner ----------
-    def _run_ps(self, script_name, upns, group_ids, on_done):
-        import os, datetime
-        from PyQt6.QtGui import QTextCursor
-
-        # --- Prepare script path ---
-        script_path = os.path.join(
-            os.path.dirname(__file__),
-            "Powershell_Scripts",
-            script_name
-        )
-
-        # --- Log file ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         logs_dir = getattr(self.parent(), "logs_dir", os.getcwd())
-        log_file = os.path.join(logs_dir, f"{timestamp}_{script_name}.log")
+        self.current_log = os.path.join(logs_dir, f"{timestamp}_{script_name}.log")
 
-        # --- Build arguments ---
         args = [
-            "-UserUPNs", ",".join(upns),
+            "-UserUPNs", ",".join(self.user_upns),
             "-GroupIDs", ",".join(group_ids)
         ]
 
-        # --- Console feedback ---
-        if hasattr(self.parent(), "console"):
-            self.parent().console.clear()
-            self.parent().console.append(f"🚀 Running {script_name} for {len(upns)} user(s)...\n")
-
-        # --- Create and start worker ---
-        self.current_log_file = log_file
         pwsh = self.parent().get_pwsh_path()
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
+        # Create worker
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            script_path=script_path,
+            args=args,
+            log_file=self.current_log
         )
 
         # Live output
         if hasattr(self.parent(), "console"):
-            self.worker.output.connect(lambda line: (
-                self.parent().console.append(line),
-                self.parent().console.moveCursor(QTextCursor.MoveOperation.End)
-            ))
+            self.parent().console.clear()
+            self.parent().console.append(f"🚀 Running {script_name} ...\n")
 
-        # Error handling
-        self.worker.error.connect(self._on_error)
+            self.worker.output.connect(lambda line:
+                                       self.parent().console.append(line)
+                                       )
 
-        # On completion (no args expected)
-        self.worker.finished.connect(lambda: on_done("", ""))
+        def finished(status, raw):
+            callback()
 
-        # Optional log list refresh
-        if hasattr(self.parent(), "refresh_log_list"):
-            self.worker.finished.connect(self.parent().refresh_log_list)
+        self.worker.finished.connect(finished)
+        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
 
         self.worker.start()
 
-        # Show console + update button
-        if hasattr(self.parent(), "show_named_page"):
-            self.parent().show_named_page("console")
+    # --------------------------------------------------------------
+    # Result Handlers
+    # --------------------------------------------------------------
+    def _after_assign(self, do_remove=False):
+        self._results_assign = self._parse_json(self.current_log)
 
-        if hasattr(self, "run_btn"):
-            self.run_btn.setEnabled(False)
-            self.run_btn.setText("⏳ Running PowerShell...")
+        if not do_remove:
+            self._show_results()
+            return
 
-    # ---------- Helpers ----------
-    def _on_error(self, msg):
-        self.run_btn.setEnabled(True)
-        self.run_btn.setText("Run — Assign then Remove")
-        QMessageBox.critical(self, "PowerShell Error", msg)
+        self.run_btn.setText("⏳ Waiting 3 seconds…")
+        QTimer.singleShot(3000, self._start_remove_phase)
 
-    def _parse_json_from_log(self, log_file):
-        """
-        Read the PowerShell log file and extract the last valid JSON object/array.
-        This replaces _parse_json_tail since PowerShellLoggerWorker no longer returns stdout.
-        """
-        import json, re, os
+    def _start_remove_phase(self):
+        if not self.remove_ids:
+            self._show_results()
+            return
 
-        if not log_file or not os.path.exists(log_file):
-            return None
+        self.run_btn.setText("⏳ Removing…")
+
+        self._run_ps(
+            "remove_users_from_groups.ps1",
+            self.remove_ids,
+            self._after_remove
+        )
+
+    def _after_remove(self):
+        self._results_remove = self._parse_json(self.current_log)
+        self._show_results()
+
+    # --------------------------------------------------------------
+    # JSON PARSER (FIXED!)
+    # --------------------------------------------------------------
+    def _parse_json(self, log_file):
+        import json, re
 
         try:
             with open(log_file, "r", encoding="utf-8") as f:
-                content = f.read()
+                text = f.read()
 
-            # Find the last JSON block ({...} or [...]) in the log
-            match = re.search(r'(\{.*\}|\[.*\])\s*$', content, re.DOTALL)
+            # Extract LAST JSON array
+            match = re.search(r"(\[\s*\{.*?\}\s*\])", text, re.DOTALL)
             if not match:
-                return None
+                return []
 
-            json_text = match.group(1).strip()
+            return json.loads(match.group(1))
+        except:
+            return []
 
-            # Try parsing JSON
-            data = json.loads(json_text)
-            if isinstance(data, dict):
-                return [data]
-            elif isinstance(data, list):
-                return data
-            else:
-                return None
-        except Exception:
-            return None
-
-    def _rows_html(self, rows, text_color):
-        def colorize(status):
-            st = (status or "").lower()
-            if "✅" in status or "success" in st or "added" in st or "removed" in st:
-                return "#00cc44"
-            if "❌" in status or "fail" in st or "error" in st:
-                return "#ff4c4c"
-            if "⚠" in status or "already" in st or "skipped" in st:
-                return "#ffcc00"
-            return text_color
-
-        html_rows = []
-        for r in rows:
-            phase = r.get("Phase", "Assign")  # our remove script sets Phase="Remove"
-            user = r.get("UserUPN", "N/A")
-            group = r.get("GroupName", "N/A")
-            st = r.get("Status", "")
-            html_rows.append(
-                f"<tr><td>{phase}</td><td>{user}</td><td>{group}</td><td style='color:{colorize(st)}'>{st}</td></tr>"
-            )
-        return "\n".join(html_rows)
-
+    # --------------------------------------------------------------
+    # Show Results
+    # --------------------------------------------------------------
     def _show_results(self):
-        self.run_btn.setEnabled(True)
-        self.run_btn.setText("Run — Assign then Remove")
-
-        rows_all = []
-        rows_all.extend(self._results_assign or [])
-        rows_all.extend(self._results_remove or [])
+        all_rows = (self._results_assign or []) + (self._results_remove or [])
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Group(s) Management — Results")
-        dlg.setMinimumSize(780, 460)
+        dlg.setMinimumSize(800, 460)
 
-        palette = self.palette()
-        is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
-        if is_dark:
-            bg = "#1e1e1e";
-            fg = "#f0f0f0";
-            head = "#333";
-            border = "#444"
-        else:
-            bg = "#fff";
-            fg = "#222";
-            head = "#f6f6f6";
-            border = "#e5e5e5"
+        html = self._rows_html(all_rows)
 
-        rows_html = self._rows_html(rows_all, fg)
-        html = f"""
-        <html><head><style>
-          body {{ background:{bg}; color:{fg}; font-family:-apple-system, Helvetica, Arial; font-size:13px; }}
-          table {{ border-collapse: collapse; width: 100%; }}
-          th, td {{ padding: 6px 10px; border-bottom: 1px solid {border}; text-align: left; }}
-          th {{ background:{head}; }}
-        </style></head><body>
-          <h3>Assign → wait 3s → Remove</h3>
-          <table>
+        lay = QVBoxLayout(dlg)
+        view = QTextEdit()
+        view.setReadOnly(True)
+        view.setHtml(html)
+        lay.addWidget(view)
+
+        close = QPushButton("Close")
+        close.clicked.connect(dlg.accept)
+        lay.addWidget(close)
+
+        dlg.exec()
+        self.close()
+
+    def _rows_html(self, rows):
+        html_rows = ""
+        for r in rows:
+            html_rows += f"""
+            <tr>
+                <td>{r.get("Phase", "")}</td>
+                <td>{r.get("UserUPN", "")}</td>
+                <td>{r.get("GroupName", "")}</td>
+                <td>{r.get("Status", "")}</td>
+            </tr>
+            """
+
+        return f"""
+        <html><body>
+        <h3>Assign → wait 3s → Remove</h3>
+        <table border="1" cellspacing="0" cellpadding="6" width="100%">
             <tr><th>Phase</th><th>User</th><th>Group</th><th>Status</th></tr>
-            {rows_html}
-          </table>
+            {html_rows}
+        </table>
         </body></html>
         """
 
-        lay = QVBoxLayout(dlg)
-        view = QTextEdit();
-        view.setReadOnly(True);
-        view.setHtml(html)
-        lay.addWidget(view)
-        btn = QPushButton("Close");
-        btn.clicked.connect(dlg.accept)
-        lay.addWidget(btn)
-        dlg.exec()
-
-        self.close()
 
 # --- Groups Assignments---#
 class AssignGroupsWorker(QThread):
@@ -1402,6 +1222,7 @@ class AssignGroupsWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignGroupsDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -1677,6 +1498,7 @@ class AssignGroupsDialog(QDialog):
         self.ok_button.setText("Assign Selected Group(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Access Package ---#
 class AssignAccessPackagesWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -1715,6 +1537,7 @@ class AssignAccessPackagesWorker(QThread):
             self.finished.emit(stdout or "", stderr or "")
         except Exception as e:
             self.error.emit(str(e))
+
 
 class AssignAccessPackagesDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, json_path=None):
@@ -1945,6 +1768,7 @@ class AssignAccessPackagesDialog(QDialog):
         self.ok_button.setText("OK")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Missing Groups Assignment Dialog --- #
 class AssignMissingGroupsDialog(QDialog):
     def __init__(self, parent=None, source_user=None, target_user=None, missing_groups=None):
@@ -2098,31 +1922,8 @@ class AssignMissingGroupsDialog(QDialog):
         self.assign_btn.setText("Assign Selected Groups")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 # --- Generate Temporary Access Pass Worker ---
-class GenerateTAPWorker(QThread):
-    finished = pyqtSignal(str, str)
-    error = pyqtSignal(str)
-
-    def __init__(self, command):
-        super().__init__()
-        self.command = command
-
-    def run(self):
-        import subprocess
-        try:
-            result = subprocess.run(
-                self.command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8"
-            )
-            if result.returncode != 0:
-                self.error.emit(result.stderr.strip() or "Unknown PowerShell error")
-            else:
-                self.finished.emit(result.stdout.strip(), result.stderr.strip())
-        except Exception as e:
-            self.error.emit(str(e))
-
 class GenerateTAPDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, console=None):
         super().__init__(parent)
@@ -2152,7 +1953,6 @@ class GenerateTAPDialog(QDialog):
         # ───────────── RIGHT: TAP Settings ─────────────
         right_layout = QVBoxLayout()
 
-        # Duration slider
         self.duration_label = QLabel("Duration: 60 min")
         right_layout.addWidget(self.duration_label)
 
@@ -2163,7 +1963,6 @@ class GenerateTAPDialog(QDialog):
         self.duration_slider.valueChanged.connect(self.update_duration_label)
         right_layout.addWidget(self.duration_slider)
 
-        # One-time checkbox
         self.one_time_check = QCheckBox("One-time use")
         self.one_time_check.setChecked(True)
         self.one_time_check.stateChanged.connect(self.toggle_duration_state)
@@ -2173,7 +1972,7 @@ class GenerateTAPDialog(QDialog):
         panels_layout.addLayout(right_layout, 1)
         main_layout.addLayout(panels_layout)
 
-        # ───────────── BUTTONS ─────────────
+        # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
 
@@ -2190,20 +1989,21 @@ class GenerateTAPDialog(QDialog):
         button_layout.addStretch(1)
         main_layout.addLayout(button_layout)
 
-    # ----------------------------------------------------------------------
+    # --------------------------------------------------------------
     def update_duration_label(self, value):
         self.duration_label.setText(f"Duration: {value} min")
 
     def toggle_duration_state(self, state):
-        """Disable duration slider when one-time use is checked."""
         disabled = state == Qt.CheckState.Checked
         self.duration_slider.setEnabled(not disabled)
         self.duration_label.setEnabled(not disabled)
 
-    # ----------------------------------------------------------------------
+    # --------------------------------------------------------------
     def start_tap_generation(self):
         import datetime
         from PyQt6.QtWidgets import QMessageBox
+        from PyQt6 import QtGui
+        import os
 
         duration = self.duration_slider.value()
         one_time = self.one_time_check.isChecked()
@@ -2212,72 +2012,74 @@ class GenerateTAPDialog(QDialog):
             QMessageBox.warning(self, "No Users", "No user UPNs were provided.")
             return
 
-        # --- Paths ---
+        # Script path
         script_path = os.path.join(
             os.path.dirname(__file__),
             "Powershell_Scripts",
             "generate_tap.ps1"
         )
 
+        # Log file
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         log_file = os.path.join(
             getattr(self.parent(), "logs_dir", os.getcwd()),
             f"{timestamp}_Generate-TAP.log"
         )
 
-        # --- Build parameters ---
+        # Build parameters
         args = [
             "-UserPrincipalName", ",".join(self.user_upns),
             "-LifetimeInMinutes", str(duration)
         ]
+
         if one_time:
             args.append("-OneTimeUse")
 
-        # --- Clear console and start PowerShell worker ---
+        # Console output
         if self.console:
             self.console.clear()
-            self.console.append(f"🚀 Generating TAP(s) for {len(self.user_upns)} user(s)...\n")
+            self.console.append(
+                f"🚀 Generating TAP(s) for {len(self.user_upns)} user(s)...\n"
+            )
 
-        # --- Create and start worker ---
-        self.current_log_file = log_file
+        # Launch worker
         pwsh = self.parent().get_pwsh_path()
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            script_path=script_path,
+            args=args,
+            log_file=log_file
         )
 
-        # Stream output live to console
+        # Live streaming
         if self.console:
             self.worker.output.connect(lambda line: (
                 self.console.append(line),
                 self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
             ))
 
-        # Error handling
+        # Error
         self.worker.error.connect(self.on_tap_error)
 
-        # When done
+        # Finish
         self.worker.finished.connect(self.on_tap_done)
 
-        # Optional: refresh logs in main window
+        # Refresh logs
         if hasattr(self.parent(), "refresh_log_list"):
             self.worker.finished.connect(self.parent().refresh_log_list)
 
         # Start
         self.worker.start()
 
-        # Show console + disable button while running
         if hasattr(self.parent(), "show_named_page"):
             self.parent().show_named_page("console")
 
         self.ok_button.setEnabled(False)
         self.ok_button.setText("⏳ Generating...")
 
-    # ----------------------------------------------------------------------
-    def on_tap_done(self, msg: str = ""):
+    # --------------------------------------------------------------
+    def on_tap_done(self, status, output):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Generate TAP(s)")
 
@@ -2289,13 +2091,13 @@ class GenerateTAPDialog(QDialog):
             f"One-time use: {'Yes' if self.one_time_check.isChecked() else 'No'}"
         )
 
-        # Close the dialog
         self.accept()
 
-    def on_tap_error(self, err):
+    def on_tap_error(self, msg):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Generate TAP(s)")
-        QMessageBox.critical(self, "PowerShell Error", err)
+        QMessageBox.critical(self, "PowerShell Error", msg)
+
 
 # --- Reset Password ---
 class GenerateResetPasswordDialog(QDialog):
@@ -2374,16 +2176,16 @@ class GenerateResetPasswordDialog(QDialog):
                 + random.choice(string.digits)
                 + random.choice("!@#$%^&*()-_=+[]")
         )
-        chars += "".join(random.choices(string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{}", k=10))
+        chars += "".join(random.choices(string.ascii_letters + string.digits + "!@#$%^&*()-_=+[]{}", k=14))
         password = ''.join(random.sample(chars, len(chars)))  # shuffle
         self.password_field.setText(password)
 
-    # ----------------------------------------------------------------------
     def start_password_reset(self):
         import datetime, base64
         from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtGui import QTextCursor
 
-        # --- Get entered or generated password ---
+        # --- Get password ---
         new_password = self.password_field.text().strip()
         if not new_password:
             QMessageBox.warning(self, "Missing Password", "Please generate or enter a password.")
@@ -2393,68 +2195,73 @@ class GenerateResetPasswordDialog(QDialog):
             QMessageBox.warning(self, "No Users", "No user UPNs were provided.")
             return
 
-        # --- Paths ---
+        # --- Script path ---
         script_path = os.path.join(
             os.path.dirname(__file__),
             "Powershell_Scripts",
             "reset_password.ps1"
         )
 
+        # --- Log file path ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         log_file = os.path.join(
             getattr(self.parent(), "logs_dir", os.getcwd()),
             f"{timestamp}_Reset-Password.log"
         )
 
-        # --- Encode password safely ---
+        # --- Encode password ---
         pw_b64 = base64.b64encode(new_password.encode("utf-8")).decode("ascii")
 
-        # --- Build arguments ---
+        # --- Unified worker ARGS (POWERFUL AND CLEAN) ---
         args = [
             "-UserPrincipalName", ",".join(self.user_upns),
             "-NewPasswordBase64", pw_b64
         ]
 
-        # Add optional flag if the checkbox exists and is UNCHECKED
         if hasattr(self, "force_change_check") and not self.force_change_check.isChecked():
             args.append("-NoForceChange")
 
-        # --- Console feedback ---
+        # --- Console ---
         if self.console:
             self.console.clear()
             self.console.append(f"🔐 Resetting password for {len(self.user_upns)} user(s)...\n")
 
-        # --- Create and start worker ---
-        self.current_log_file = log_file
+        # --- Create Worker (NEW FORMAT) ---
         pwsh = self.parent().get_pwsh_path()
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            script_path=script_path,
+            args=args,
+            log_file=log_file
         )
 
+        # --- Live output ---
         if self.console:
             self.worker.output.connect(lambda line: (
                 self.console.append(line),
-                self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+                self.console.moveCursor(QTextCursor.MoveOperation.End)
             ))
 
+        # --- Error handling ---
         self.worker.error.connect(self.on_password_error)
+
+        # --- Finalization ---
         self.worker.finished.connect(self.on_password_done)
 
+        # --- Refresh logs ---
         if hasattr(self.parent(), "refresh_log_list"):
             self.worker.finished.connect(self.parent().refresh_log_list)
 
-        self.worker.start()
+        # --- UI updates ---
+        self.ok_button.setEnabled(False)
+        self.ok_button.setText("⏳ Resetting...")
 
         if hasattr(self.parent(), "show_named_page"):
             self.parent().show_named_page("console")
 
-        # --- Disable button during run ---
-        self.ok_button.setEnabled(False)
-        self.ok_button.setText("⏳ Resetting...")
+        # --- Start PowerShell ---
+        self.worker.start()
 
     # ----------------------------------------------------------------------
     def on_password_done(self, msg: str = ""):
@@ -2474,6 +2281,7 @@ class GenerateResetPasswordDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Reset Password(s)")
         QMessageBox.critical(self, "PowerShell Error", err)
+
 
 # --- Revoke Session ---
 class RevokeSessionsDialog(QDialog):
@@ -2520,16 +2328,15 @@ class RevokeSessionsDialog(QDialog):
         button_layout.addStretch(1)
         main_layout.addLayout(button_layout)
 
-    # ----------------------------------------------------------------------
     def start_revoke_sessions(self):
         import datetime
         from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtGui import QTextCursor
 
         if not self.user_upns:
             QMessageBox.warning(self, "No Users", "Please select at least one user.")
             return
 
-        # PowerShell script path
         script_path = os.path.join(
             os.path.dirname(__file__),
             "Powershell_Scripts",
@@ -2537,34 +2344,33 @@ class RevokeSessionsDialog(QDialog):
         )
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(
-            getattr(self.parent(), "logs_dir", os.getcwd()),
-            f"{timestamp}_Revoke-Sessions.log"
-        )
+        logs_dir = getattr(self.parent(), "logs_dir", os.getcwd())
+        log_file = os.path.join(logs_dir, f"{timestamp}_Revoke-Sessions.log")
 
-        # Arguments
-        args = ["-UserPrincipalName", ",".join(self.user_upns)]
+        # ❗ ONLY script parameters here — NOT pwsh flags
+        args = [
+            "-UserPrincipalName", ",".join(self.user_upns)
+        ]
 
-        # Clear console
         if self.console:
             self.console.clear()
             self.console.append(f"🚪 Revoking sessions for {len(self.user_upns)} user(s)...\n")
 
-        # --- Create and start worker ---
-        self.current_log_file = log_file
         pwsh = self.parent().get_pwsh_path()
+        self.current_log_file = log_file
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
+        # Correct unified call
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            script_path=script_path,
+            args=args,
+            log_file=log_file
         )
 
         if self.console:
-            self.worker.output.connect(lambda line: (
-                self.console.append(line),
-                self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+            self.worker.finished.connect(lambda status, out: (
+                self.console.append(out),
+                self.console.moveCursor(QTextCursor.MoveOperation.End)
             ))
 
         self.worker.error.connect(self.on_revoke_error)
@@ -2597,6 +2403,7 @@ class RevokeSessionsDialog(QDialog):
         QMessageBox.critical(self, "PowerShell Error", err)
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Revoke Sessions")
+
 
 # --- Get LAPS ---
 class RetrieveLAPSDialog(QDialog):
@@ -2654,69 +2461,75 @@ class RetrieveLAPSDialog(QDialog):
         button_layout.addStretch(1)
         main_layout.addLayout(button_layout)
 
-    # ----------------------------------------------------------------------
     def start_laps_retrieval(self):
         import datetime
         import os
         from PyQt6.QtWidgets import QMessageBox
         from PyQt6 import QtGui
 
+        # --- Validation ---
         if not getattr(self, "device_ids", []):
             QMessageBox.warning(self, "No Devices", "Please select at least one device.")
             return
 
-        # Script path
+        # --- PowerShell script path ---
         script_path = os.path.join(
             os.path.dirname(__file__),
             "Powershell_Scripts",
             "retrieve_laps.ps1"
         )
 
-        # Log file path
+        # --- Log path ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         log_file = os.path.join(
             getattr(self.parent(), "logs_dir", os.getcwd()),
             f"{timestamp}_Retrieve-LAPS.log"
         )
 
-        # Pass DeviceId to PowerShell script
-        args = ["-DeviceId", ",".join(self.device_ids)]
+        # --- Build PowerShell arguments ---
+        args = [
+            "-ExecutionPolicy", "Bypass",
+            "-File", script_path,
+            "-DeviceId", ",".join(self.device_ids)
+        ]
 
-        # Show initial console output
+        # --- Initial console output ---
         if self.console:
             self.console.clear()
             self.console.append(
                 f"🔑 Retrieving LAPS password for {len(self.device_ids)} device(s)...\n"
             )
 
-        # --- Create and start worker ---
-        self.current_log_file = log_file
+        # --- Start worker ---
         pwsh = self.parent().get_pwsh_path()
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            command=args
         )
 
+        # Live output
         if self.console:
-            self.worker.output.connect(lambda line: (
-                self.console.append(line),
+            self.worker.finished.connect(lambda status, out: (
+                self.console.append(out),
                 self.console.moveCursor(QtGui.QTextCursor.MoveOperation.End)
             ))
 
+        # Error handling
         self.worker.error.connect(self.on_laps_error)
         self.worker.finished.connect(self.on_laps_done)
 
+        # Refresh log list if available
         if hasattr(self.parent(), "refresh_log_list"):
             self.worker.finished.connect(self.parent().refresh_log_list)
 
+        # Run
         self.worker.start()
 
         if hasattr(self.parent(), "show_named_page"):
             self.parent().show_named_page("console")
 
+        # Disable button during processing
         self.ok_button.setEnabled(False)
         self.ok_button.setText("⏳ Retrieving...")
 
@@ -2785,6 +2598,7 @@ class RetrieveLAPSDialog(QDialog):
         self.ok_button.setEnabled(True)
         self.ok_button.setText("Retrieve LAPS Password(s)")
 
+
 # --- Exchange PART ---
 class AssignExchangeWorker(QThread):
     finished = pyqtSignal(str, str)  # stdout, stderr
@@ -2808,6 +2622,7 @@ class AssignExchangeWorker(QThread):
                 self.finished.emit(result.stdout.strip(), result.stderr.strip())
         except Exception as e:
             self.error.emit(str(e))
+
 
 class GrantSMBFullDialog(QDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
@@ -2955,8 +2770,10 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("⏳ Granting...")
 
         # Include LogPath in PowerShell command
+        pwsh = self.parent().get_pwsh_path()
+
         command = [
-            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
             "-Users", ",".join(self.user_upns),
             "-Mailboxes", ",".join(m["Mailbox"] for m in selected),
@@ -3023,6 +2840,7 @@ class GrantSMBFullDialog(QDialog):
         self.ok_button.setText("Grant Full Delegation")
         QMessageBox.critical(self, "PowerShell Error", err)
 
+
 class GrantSMBSendAsDialog(GrantSMBFullDialog):
     def __init__(self, parent=None, user_upns=None, csv_path=None):
         super().__init__(parent, user_upns, csv_path)
@@ -3055,8 +2873,10 @@ class GrantSMBSendAsDialog(GrantSMBFullDialog):
         self.ok_button.setEnabled(False)
         self.ok_button.setText("⏳ Granting...")
 
+        pwsh = self.parent().get_pwsh_path()
+
         command = [
-            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
             "-Users", ",".join(self.user_upns),
             "-Mailboxes", ",".join(m["Mailbox"] for m in selected),
@@ -3106,6 +2926,7 @@ class GrantSMBSendAsDialog(GrantSMBFullDialog):
         layout.addWidget(close_btn)
 
         dlg.exec()
+
 
 class AdvancedIdentitySearchDialog(QDialog):
     def __init__(self, parent, df, title="Advanced Search"):
@@ -3220,6 +3041,7 @@ class AdvancedIdentitySearchDialog(QDialog):
                 print("Error clearing filter:", e)
         self.close()
 
+
 # --- BitLocker PART ---
 class BitlockerKeysDialog(QDialog):
     def __init__(self, device_names, parent=None):
@@ -3266,9 +3088,10 @@ class BitlockerKeysDialog(QDialog):
         )
 
         device_names_str = ",".join(self.device_names)
+        pwsh = self.parent().get_pwsh_path()
 
-        cmd = [
-            "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        command = [
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-File", script_path,
             "-DeviceNames", device_names_str
         ]
@@ -3276,10 +3099,17 @@ class BitlockerKeysDialog(QDialog):
         self.refresh_btn.setEnabled(False)
         self.console.append("⏳ Fetching BitLocker recovery keys...")
 
-        # Run PowerShell in worker thread
-        self.worker = AssignExchangeWorker(cmd)
-        self.worker.finished.connect(self.on_done)
+        # Use PowerShellWorker (NOT AssignExchangeWorker)
+        self.worker = PowerShellWorker(
+            pwsh_path=pwsh,
+            command=command
+        )
+
+        # Hooks
+        self.worker.output.connect(lambda line: self.console.append(line))
         self.worker.error.connect(self.on_error)
+        self.worker.finished.connect(self.on_done)
+
         self.worker.start()
 
     def on_done(self, stdout, stderr):
@@ -3328,6 +3158,7 @@ class BitlockerKeysDialog(QDialog):
         self.refresh_btn.setEnabled(True)
         self.console.append(f"❌ PowerShell error: {err}")
         QMessageBox.critical(self, "PowerShell Error", err)
+
 
 # --- Modern Signature Pad ---
 class SignaturePad(QWidget):
@@ -3407,6 +3238,7 @@ class SignaturePad(QWidget):
         self._dirty = True
         self.update()
 
+
 class TypedSignatureDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -3432,6 +3264,7 @@ class TypedSignatureDialog(QDialog):
 
     def get_text(self):
         return self.edit.text().strip()
+
 
 # --- Offboarding Wizard --- #
 class OffboardingWizard(QDialog):
@@ -3942,6 +3775,7 @@ class OffboardingWizard(QDialog):
 
         self.close()
 
+
 # --- Onboarding Wizard --- #
 class SupplyWizard(QDialog):
     def __init__(self, users, parent=None):
@@ -4416,6 +4250,7 @@ class SupplyWizard(QDialog):
         )
 
         self.close()
+
 
 # --- Application ---#
 class OffboardManager(QWidget):
@@ -5461,14 +5296,44 @@ class OffboardManager(QWidget):
         self.ps_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Powershell_Scripts")
 
     def get_pwsh_path(self):
-        # macOS/Linux:
-        exe = os.path.join(self.pwsh_portable_dir, "pwsh")
+        """
+        Returns the path to the portable PowerShell executable.
+        If missing, shows a clear error + disables PowerShell features.
+        """
+        from PyQt6.QtWidgets import QMessageBox
 
-        # Windows:
-        if os.name == "nt":
-            exe = os.path.join(self.pwsh_portable_dir, "pwsh.exe")
+        base = os.path.dirname(os.path.abspath(__file__))
+        folder = os.path.join(base, "pwsh_portable")
 
-        return exe
+        # pwsh executable
+        exe = "pwsh.exe" if os.name == "nt" else "pwsh"
+        pwsh_path = os.path.join(folder, exe)
+
+        # --- 1) Folder missing ---
+        if not os.path.isdir(folder):
+            QMessageBox.critical(
+                self,
+                "Portable PowerShell Missing",
+                "🧩 The portable PowerShell folder 'pwsh_portable' was not found.\n\n"
+                "This application requires a bundled PowerShell runtime in this folder:\n\n"
+                f"{folder}\n\n"
+                "Please add it and restart the app."
+            )
+            return None
+
+        # --- 2) Executable missing ---
+        if not os.path.exists(pwsh_path):
+            QMessageBox.critical(
+                self,
+                "PowerShell Executable Missing",
+                "🧩 The portable PowerShell executable was not found.\n\n"
+                f"Expected file:\n{pwsh_path}\n\n"
+                "Please install or restore the portable PowerShell runtime."
+            )
+            return None
+
+        # --- 3) All good ---
+        return pwsh_path
 
     def open_advanced_search(self):
         # Detect active page
@@ -5743,38 +5608,63 @@ class OffboardManager(QWidget):
             self.run_access_package_script()
 
     def run_powershell_with_output(self, script_path, params: dict):
+        from PyQt6.QtWidgets import QMessageBox
+
         self.console_output.clear()
 
-        # Build params safely
+        # --- Build arguments safely ---
         args = []
         for k, v in params.items():
-            if isinstance(v, (list, tuple)):  # multiple values
+            if isinstance(v, (list, tuple)):
                 joined = ",".join(str(item) for item in v)
                 args.extend([f"-{k}", joined])
-            else:  # single value
+            else:
                 args.extend([f"-{k}", str(v)])
 
-        # Create log file path
+        # --- Create log file path ---
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = os.path.join(self.logs_dir, f"{timestamp}_{os.path.basename(script_path)}.log")
-
-        # --- Create and start worker ---
+        log_file = os.path.join(
+            self.logs_dir,
+            f"{timestamp}_{os.path.basename(script_path)}.log"
+        )
         self.current_log_file = log_file
+
+        # --- Build full PowerShell command (NO pwsh prefix here) ---
+        full_cmd = [
+                       "-ExecutionPolicy", "Bypass",
+                       "-File", script_path,
+                   ] + args
+
         pwsh = self.get_pwsh_path()
 
-        self.worker = PowerShellLoggerWorker(
-            pwsh,
-            script_path,
-            args,
-            log_file
-        )
+        # --- Use ONLY the unified worker ---
+        self.worker = PowerShellWorker(pwsh, full_cmd)
 
-        # Connect signals
-        self.worker.output.connect(lambda line: self.console_output.append(line))
-        self.worker.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
-        self.worker.finished.connect(lambda msg: QMessageBox.information(self, "Finished", msg))
+        # --- Connect signals ---
         self.worker.finished.connect(self.refresh_log_list)
 
+        # stdout or stderr → console
+        self.worker.finished.connect(
+            lambda status, msg: self.console_output.append(msg)
+        )
+
+        # error popup when status == "error"
+        self.worker.finished.connect(
+            lambda status, msg: (
+                QMessageBox.critical(self, "Error", msg)
+                if status == "error" else None
+            )
+        )
+
+        # show success bubble
+        self.worker.finished.connect(
+            lambda status, msg: (
+                QMessageBox.information(self, "Finished", "Script completed.")
+                if status == "success" else None
+            )
+        )
+
+        # --- Start ---
         self.worker.start()
         self.show_named_page("console")
 
@@ -7743,23 +7633,11 @@ class OffboardManager(QWidget):
         self.console_output.append("🚀 Running create_random_users.ps1 …")
 
     def on_random_user_done(self, status, msg):
-        self.random_status.setWordWrap(True)
-        self.random_status.setFixedWidth(150)
-
-        if status == "success":
-            self.random_status.setText("Random users created successfully!")
-        else:
-            self.random_status.setText(msg.split("\n", 1)[0])
-
-        # show result in console
         self.console_output.append(msg)
-
-        # refresh the log list
-        try:
-            self._last_random_log = log_path
-            self.refresh_log_list()
-        except:
-            pass
+        if status == "error":
+            QMessageBox.critical(self, "Random User Error", msg)
+        else:
+            QMessageBox.information(self, "Complete", "Random user creation completed.")
 
     def generate_csv_template(self):
         # Generate default filename with timestamp
@@ -9677,6 +9555,7 @@ class OffboardManager(QWidget):
         """Restart the entire application."""
         python = sys.executable
         os.execl(python, python, *sys.argv)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

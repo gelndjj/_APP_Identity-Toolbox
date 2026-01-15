@@ -104,6 +104,7 @@ $CSVproperties = @(
     "OnPremisesDomainName",
     # Authentication methods
     "DefaultAuthentication",
+    "PreferredAuthentication",
     "MicrosoftAuthenticatorDisplayName",
     "EmailAuthAddress",
     "SMSPhoneNumber",
@@ -143,6 +144,9 @@ $Csvfile = Join-Path -Path $PSScriptRoot -ChildPath "EntraIDUsers_$LogDate.csv"
 
 Write-Output "Retrieving all users..."
 $users = Get-MgUser -All -Property $properties
+
+# Debug - Run only on first 50 users (comment above line if used)
+# $users = Get-MgUser -All -Property $properties | Select-Object -First 50
 
 $usersDetails = [System.Collections.Concurrent.ConcurrentBag[System.Object]]::new()
 $length = $users.length
@@ -283,6 +287,9 @@ foreach ($user in $users) {
 
         $user | Add-Member -MemberType NoteProperty -Name DefaultAuthentication `
             -Value (($usersDetails[$user.Id] | Where { $_.requesttype -eq "authenticationPreference" }).body.systemPreferredAuthenticationMethod ?? "Not set") -Force
+
+        $user | Add-Member -MemberType NoteProperty -Name PreferredAuthentication `
+            -Value $($($usersDetails[$user.Id] | where {$_.requesttype -eq "authenticationPreference"}).body.userPreferredMethodForSecondaryAuthentication ?? "Not set") -Force
 
         $user | Add-Member -MemberType NoteProperty -Name AuthenticationMethod -Value $authenticationType -Force
 
